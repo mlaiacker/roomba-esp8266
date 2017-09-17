@@ -1,6 +1,4 @@
-
 // Includes
-
 #include <Time.h>
 #include <TimeLib.h>
 #include <Base64_lib.h>
@@ -9,26 +7,22 @@
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
 //#include <EEPROM.h>
-#include <SoftwareSerial.h>
-
+//#include <SoftwareSerial.h>
 #include <ArduinoJson.h>
 
 #include <FS.h>
 #include <Ticker.h>
 
-Ticker ticker_state_charge;
-Ticker ticker_state_dist;
-
-Ticker ticker_ntp;
 #include <WiFiUdp.h>
 
-unsigned int localPort = 2390;      // local port to listen for UDP packets
+unsigned int localPort = 2380;      // local port to listen for UDP packets
 
 /* Don't hardwire the IP address or we won't get the benefits of the pool.
  *  Lookup the IP address for the host name instead */
 //IPAddress timeServer(129, 6, 15, 28); // time.nist.gov NTP server
 IPAddress timeServerIP; // time.nist.gov NTP server address
 const char* ntpServerName = "time.nist.gov";
+Ticker ticker_ntp;
 
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
 
@@ -37,8 +31,7 @@ byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing pack
 // A UDP instance to let us send and receive packets over UDP
 WiFiUDP udp;
 
-
-String roombotVersion = "0.3.6";
+String roombotVersion = "0.4.8";
 String WMode = "1";
 
 #define SERIAL_RX     D5  // pin for SoftwareSerial RX
@@ -46,8 +39,7 @@ String WMode = "1";
 #define  GPIO_LED     16
 #define  GPIO_BUTTON     13
 
-SoftwareSerial mySerial(SERIAL_RX, SERIAL_TX); // (RX, TX. inverted, buffer)
-
+//SoftwareSerial mySerial(SERIAL_RX, SERIAL_TX); // (RX, TX. inverted, buffer)
 
 // Div
 File UploadFile;
@@ -73,56 +65,47 @@ String formatBytes(size_t bytes) {
 // WIFI
 String ssid    = "mlaiacker";
 String password = "83kdfiafo274DF";
-String espName    = "Roombot";
+String espName    = "esp-meter";
 
 // webserver
 ESP8266WebServer  server(80);
 MDNSResponder   mdns;
 WiFiClient client;
 
-// AP mode when WIFI not available
-//const char *APssid = "Roombot";
-//const char *APpassword = "thereisnospoon";
-
-
-
 // Pimatic settings
 String host   = "192.168.x.x";
 const int httpPort    = 80;
-String Username     = "admin";
-String Password     = "password";
-String chargevar = "chargestatus";
-String distancevar = "distance";
 char authVal[40];
 char authValEncoded[40];
 String ClientIP;
 
-String roomba_state1 = "?";
-String roomba_state_volt = "?";
-String roomba_state_current = "?";
-String roomba_state_temp = "?";
-String roomba_state_dist = "?";
-int32_t state_dist_total=0;
 long state_rssi;
 int state_adc;
+Ticker ticker_adc;
 
 int serial_state = 0;
 
-int state_led = 0;
+int state_led = 1;
 
-int clean_auto_on = 1;
-int32_t clean_dist = 0;
-int clean_daily_mask = 0x1f; 
-int clean_hour = 12;
+float button_dtime = 0;
+int button_time=0;
+int button_time_ms=0;
+int button_dtime_ms;
+
+int power = 0;
+int energy = 0; 
+int button_count = 0;
+
+int cpu_count = 0;
+int cpu_dcount = ESP.getCycleCount();
 
 #define BASE64_LEN 40
 char unameenc[BASE64_LEN];
 
-
 // HTML
 //String header       =  "<html lang='en'><head><title>Roombot control panel</title><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='stylesheet' href='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css'><script src='https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js'></script><script src='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js'></script></head><body>";
-String header       =  "<html lang='en'><head><title>Roombot control panel</title><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='stylesheet' href='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css'><script src='https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js'></script><script src='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js'></script></head><body>";
-String navbar       =  "<nav class='navbar navbar-default'><div class='container-fluid'><div class='navbar-header'><a class='navbar-brand' href='/'>Roombot control panel</a></div><div><ul class='nav navbar-nav'><li><a href='.'><span class='glyphicon glyphicon-info-sign'></span> Status</a></li><li class='dropdown'><a class='dropdown-toggle' data-toggle='dropdown' href='#'><span class='glyphicon glyphicon-cog'></span> Tools<span class='caret'></span></a><ul class='dropdown-menu'><li><a href='/updatefwm'><span class='glyphicon glyphicon-upload'></span> Firmware</a></li><li><a href='/filemanager.html'><span class='glyphicon glyphicon-file'></span> File manager</a></li><li><a href='/fupload'> File upload</a></li><li><a href='/ntp'> NTP</a></li></ul></li><li><a href='https://github.com/incmve/roomba-eps8266/wiki' target='_blank'><span class='glyphicon glyphicon-question-sign'></span> Help</a></li></ul></div></div></nav>";
+String header       =  "<html lang='en'><head><title>"+espName+" control panel</title><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='stylesheet' href='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css'><script src='https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js'></script><script src='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js'></script></head><body>";
+String navbar       =  "<nav class='navbar navbar-default'><div class='container-fluid'><div class='navbar-header'><a class='navbar-brand' href='/'>"+espName+" control panel</a></div><div><ul class='nav navbar-nav'><li><a href='.'><span class='glyphicon glyphicon-info-sign'></span> Status</a></li><li class='dropdown'><a class='dropdown-toggle' data-toggle='dropdown' href='#'><span class='glyphicon glyphicon-cog'></span> Tools<span class='caret'></span></a><ul class='dropdown-menu'><li><a href='/updatefwm'><span class='glyphicon glyphicon-upload'></span> Firmware</a></li><li><a href='/filemanager.html'><span class='glyphicon glyphicon-file'></span> File manager</a></li><li><a href='/fupload'> File upload</a></li><li><a href='/ntp'> NTP</a></li></ul></li><li><a href='https://github.com/incmve/roomba-eps8266/wiki' target='_blank'><span class='glyphicon glyphicon-question-sign'></span> Help</a></li></ul></div></div></nav>";
 String containerStart   =  "<div class='container'><div class='row'>";
 String containerEnd     =  "<div class='clearfix visible-lg'></div></div></div>";
 String siteEnd        =  "</body></html>";
@@ -142,79 +125,34 @@ String inputBodyName    =  "<div class='form-group'><div class='input-group'><sp
 String inputBodyPOST    =  "</span><input type='text' name='";
 String inputBodyClose   =  "' class='form-control' aria-describedby='basic-addon1'></div></div>";
 String roombacontrol    =  "<a href='roombastart'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-play' aria-hidden='true'></span> Start</button></a><a href='roombadock'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-home' aria-hidden='true'></span> Dock</button></a> <a href='roombastop'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-stop' aria-hidden='true'></span> Stop</button></a></div></div>";
-String linksCleanHour;//   =  "<a href='api?action=cleanHour&value=0'><button type='button' class='btn btn-default'>0</button></a> <a href='api?action=cleanHour&value=1'><button type='button' class='btn btn-default'>1</button></a> <a href='api?action=cleanHour&value=2'> <button type='button' class='btn btn-default'>2</button></a> <a href='api?action=cleanHour&value=3'><button type='button' class='btn btn-default'>3</button></a> </div></div>";
-String linksCleanDays   =  "<a href='api?action=cleanDays&value=1'><button type='button' class='btn btn-default'>M</button></a> <a href='api?action=cleanDays&value=2'><button type='button' class='btn btn-default'>T</button></a> <a href='api?action=cleanDays&value=4'><button type='button' class='btn btn-default'>W</button></a> <a href='api?action=cleanDays&value=8'><button type='button' class='btn btn-default'>T</button></a> <a href='api?action=cleanDays&value=16'><button type='button' class='btn btn-default'>F</button></a> <a href='api?action=cleanDays&value=32'><button type='button' class='btn btn-default'>S</button></a> <a href='api?action=cleanDays&value=64'><button type='button' class='btn btn-default'>S</button></a> </div></div>";
 
 
 // ROOT page
 void handle_root()
 {
-  String clean_days="";
-  if(clean_daily_mask & 1)
-  {
-      clean_days += String("M");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 2)
-  {
-      clean_days += String("T");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 4)
-  {
-      clean_days += String("W");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 8)
-  {
-      clean_days += String("T");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 16)
-  {
-      clean_days += String("F");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 32)
-  {
-      clean_days += String("S");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 64)
-  {
-      clean_days += String("S");
-  } else clean_days += String("_");
-//  TimeElements tm;
-//  breakTime(now(),tm);
    
-  String title1     = panelHeaderName + String("Roombot Settings") + panelHeaderEnd;
+  String title1     = panelHeaderName + String("esp-meter Settings") + panelHeaderEnd;
   String IPAddClient    = panelBodySymbol + String("globe") + panelBodyName + String("IP Address") + panelBodyValue + ClientIP + String(" ") + state_rssi + String("dBm") + panelBodyEnd;
 
   String Uptime     = panelBodySymbol + String("time") + panelBodyName + String("Time UTC") + panelBodyValue + day() + String(".") + month() + String(".") + year() + String("   ") + hour() + String(":") + minute() + String(":") + second() + String(" ") + panelBodyEnd;
-  String CleanTime  = panelBodySymbol + String("time") + panelBodyName + String("Clean Time") + panelBodyValue + clean_hour + String(" h") + panelBodyEnd;
-  String CleanDays  = panelBodySymbol + String("time") + panelBodyName + String("Clean Days") + panelBodyValue + clean_days + String(" ") + panelBodyEnd;
 
-  String Status1     = panelBodySymbol + String("info-sign") + panelBodyName + String("Charge State") + panelBodyValue + roomba_state1 + panelBodyEnd;
-  String Status2     = panelBodySymbol + String("info-sign") + panelBodyName + String("Volt") + panelBodyValue + roomba_state_volt + panelBodyEnd;
-  String Status3     = panelBodySymbol + String("info-sign") + panelBodyName + String("Current") + panelBodyValue + roomba_state_current + panelBodyEnd;
-  String Status4     = panelBodySymbol + String("info-sign") + panelBodyName + String("Dist") + panelBodyValue + roomba_state_dist + panelBodyEnd;
-  String Status5     = panelBodySymbol + String("info-sign") + panelBodyName + String("Temp") + panelBodyValue + roomba_state_temp + panelBodyEnd;
-  String Status6     = panelBodySymbol + String("info-sign") + panelBodyName + String("ADC") + panelBodyValue + state_adc + String(" AutoClean:")+ clean_auto_on + String(" LED:")+ state_led + panelBodyEnd;
-
-
-//  String title2     = panelHeaderName + String("Pimatic server") + panelHeaderEnd;
-//  String IPAddServ    = panelBodySymbol + String("globe") + panelBodyName + String("IP Address") + panelBodyValue + host + panelBodyEnd;
-//  String User     = panelBodySymbol + String("user") + panelBodyName + String("Username") + panelBodyValue + Username + panelBodyEnd + panelEnd;
+  String Status6     = panelBodySymbol + String("info-sign") + panelBodyName + String("ADC") + panelBodyValue + state_adc + panelBodyEnd;
+  Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Counts") + panelBodyValue + button_count + panelBodyEnd;
+  Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("dt") + panelBodyValue + button_dtime + String("s ")+ panelBodyEnd;
+  Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Event") + panelBodyValue + button_time + String("s") + panelBodyEnd;
+  Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Leistung") + panelBodyValue + 3600.0/button_dtime + String("W ")+ panelBodyEnd;
 
 
   String title3 = panelHeaderName + String("Commands") + panelHeaderEnd;
   String commands = panelBodySymbol +                 panelBodyName +                        panelcenter + roombacontrol +  panelBodyEnd;
-         commands+= panelBodySymbol + String("time")+ panelBodyName + String("Clean Time") + panelcenter + linksCleanHour + panelBodyEnd;
-         commands+= panelBodySymbol + String("time")+ panelBodyName + String("Clean Days") + panelcenter + linksCleanDays + panelBodyEnd;
 
-  server.send ( 200, "text/html", header + navbar + containerStart + title1 + IPAddClient + Uptime + CleanTime + CleanDays + Status1 + Status2 + Status3 + Status4 + Status5 + Status6 + panelEnd + title3 + commands + panelEnd + containerEnd + siteEnd);
+  server.send ( 200, "text/html", header + navbar + containerStart + title1 + IPAddClient + Uptime + Status6 + panelEnd + title3 + commands + panelEnd + containerEnd + siteEnd);
 }
 
 bool saveConfig() {
   StaticJsonBuffer<200> jsonBuffer;
   JsonObject& json = jsonBuffer.createObject();
-  json["cleanTime"] = clean_hour;
-  json["cleanDays"] = clean_daily_mask;
-  json["cleanAuto"] = clean_auto_on;
+  json["counts"] = button_count;
 
   File configFile = SPIFFS.open("/config.json", "w");
   if (!configFile) {
@@ -256,19 +194,10 @@ bool loadConfig() {
     return false;
   }
 
-  if(json.containsKey("cleanTime"))
+  if(json.containsKey("counts"))
   {
-    clean_hour = json["cleanTime"];
+    button_count = json["counts"];
   }
-  if(json.containsKey("cleanDays"))
-  {
-    clean_daily_mask = json["cleanDays"];
-  }
-  if(json.containsKey("cleanAuto"))
-  {
-    clean_auto_on = json["cleanAuto"];
-  }
-
   return true;
 }
 
@@ -276,7 +205,6 @@ bool loadConfig() {
 void setup(void)
 {
   Serial.begin(115200);
-  mySerial.begin(115200);
   pinMode(SERIAL_RX, INPUT);
   pinMode(SERIAL_TX, OUTPUT);
   pinMode(GPIO_LED, OUTPUT);
@@ -317,23 +245,8 @@ void setup(void)
   }
   if (WiFi.status() != WL_CONNECTED && i >= 30)
   {
-    WiFi.disconnect();
-    delay(1000);
     Serial.println("");
     Serial.println("Couldn't connect to network :( ");
-  /*  Serial.println("Setting up access point");
-    Serial.println("SSID: ");
-    Serial.println(APssid);
-    Serial.println("password: ");
-    Serial.println(APpassword);
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(APssid, APpassword);
-    WMode = "AP";
-    Serial.print("Connected to ");
-    Serial.println(APssid);
-    IPAddress myIP = WiFi.softAPIP();
-    Serial.print("IP address: ");
-    Serial.println(myIP);*/
   }
   else
   {
@@ -347,22 +260,17 @@ void setup(void)
 
   }
 
-  server.on ( "/format", handleFormat );
+  server.on( "/format", handleFormat );
   server.on("/", handle_root);
   server.on("/index.html", handle_root);
   server.on("/status", handle_root);
   server.on("/", handle_fupload_html);
-  server.on("/api", handle_api);
   server.on("/updatefwm", handle_updatefwm_html);
   server.on("/fupload", handle_fupload_html);
   server.on("/filemanager_ajax", handle_filemanager_ajax);
   server.on("/delete", handleFileDelete);
-  server.on("/roombastart", handle_roomba_start);
-  server.on("/roombadock", handle_roomba_dock);
-  server.on("/roombastop", handle_roomba_stop);
   server.on("/restart", handle_esp_restart);
   server.on("/ntp", handle_ntp);
-
 
   // Upload firmware:
   server.on("/updatefw2", HTTP_POST, []() {
@@ -473,24 +381,16 @@ void setup(void)
   ClientIP = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
 
   Serial.println("HTTP server started");
-
-  ticker_state_charge.attach(30, handle_esp_charging);
-  ticker_state_dist.attach(10, handle_esp_distance);
-
   ticker_ntp.attach(36000, tick_ntp);
-  
-  Serial.println("Starting UDP");
+    Serial.println("Starting UDP");
   udp.begin(localPort);
+
+  ticker_adc.attach(10, periodic_adc);
 
   tick_ntp();
   digitalWrite(GPIO_LED,1); // off
-
-  for(int i=0;i<24;i++)
-  {
-  linksCleanHour   +=  "<a href='api?action=cleanHour&value="+String(i)+"'><button type='button' class='btn btn-default'>"+String(i)+"</button></a>\n";
-  }
-  linksCleanHour+="</div></div>";
-
+  button_time = now();
+  button_time_ms = millis();
 }
 
 String getContentType(String filename) {
@@ -541,118 +441,47 @@ bool handleFileRead(String path)
   return false;
 }
 
-bool handle_roomba_state()
-{
-  int data,data_high;
-  if (mySerial.available()==26) {
-    for(int i=0; i<26;i++)
-    {
-      data = mySerial.read();
-      if(i==13)
-      {
-//        Serial.print("dist=");
-        state_dist_total -= (int16_t)(data|data_high<<8);
-        if((state_led==0) && (state_dist_total>(clean_dist+10000)))
-        {
-          state_led = 1;
-          clean_dist = state_dist_total;
-        }
-//        Serial.println(state_dist_total);
-        roomba_state_dist = (state_dist_total/1000)+String("m ") + (state_dist_total-clean_dist)/1000 +String("m") ;
-      }
-      if(i==16)
-      {
- //       Serial.print("charge state=");
- //       Serial.println((int)data);
-        switch(data)
-        {
-          case 0: roomba_state1 = String("0 Not Charging"); break;
-          case 1: roomba_state1 = String("1 Charging Recovery"); break;
-          case 2: roomba_state1 = String("2 Charging"); break;
-          case 3: roomba_state1 = String("3 Trickle Charging"); break;
-          case 4: roomba_state1 = String("4 Waiting"); break;
-          default:
-          case 5: roomba_state1 = String("5 Charging Error"); break;
-        }
-      }
-      if(i==18)
-      {
-//        Serial.print("bat=");
-//        Serial.println((uint16_t)(data|data_high<<8));
-        roomba_state_volt = (uint16_t)(data|data_high<<8) + String("mV");
-      }
-      if(i==20)
-      {
-//        Serial.print("current=");
-//        Serial.println((int16_t)(data|data_high<<8));
-        roomba_state_current = (int16_t)(data|data_high<<8) + String("mA");
-      }
-      if(i==21)
-      {
-//        Serial.print("temp=");
-//        Serial.println((int)data);
-        roomba_state_temp = data + String("&degC");
-      }
-      if(i==23)
-      {
-        Serial.print("charge=");
-        Serial.println((uint16_t)(data|data_high<<8));
-      }
-      if(i==25)
-      {
-        Serial.print("cap=");
-        Serial.println((uint16_t)(data|data_high<<8));
-      }
-      data_high = data;
-    }
-    return true;
-  }
-  return false;
-}
-
-void handle_soft_serial()
-{
-  switch(serial_state)
-  {
-    case 1: if(handle_roomba_state()) serial_state = 0;
-    break;
-    default:
-    if (mySerial.available()) {    
-      Serial.println("got data:");
-      while(mySerial.available())
-      {
-        Serial.print(mySerial.read());
-        Serial.print(" ");
-      }
-      Serial.println(";");
-    }    
-  }
-}
-
 // LOOP
 int button_counter;
+int button_filter;
+int button_old, button_val;
 void loop(void)
 {
-  handle_soft_serial();
   server.handleClient();
-
-  if(!digitalRead(GPIO_BUTTON))
+  unsigned int cc = ESP.getCycleCount();
+  if((cc - cpu_count)>80000)
   {
-    state_led=0;
-    button_counter++;
-    clean_dist = state_dist_total;
-    if(button_counter>100000)
+    //button_dtime_ms++;
+    cpu_dcount = cc - cpu_count;
+    cpu_count  += 80000;
+  }
+
+  button_val = digitalRead(GPIO_BUTTON);
+  if(!button_val && button_old==1)
+  {
+    if(button_filter>100)
     {
-      button_counter = 0;      
-      clean_auto_on = !clean_auto_on;
+//      if(button_count%10==0)
+      {
+        button_dtime_ms = (millis() - button_time_ms);
+        button_time_ms = millis();
+        button_dtime = (float)(now() -button_time)*0 + (float)button_dtime_ms/1000.0;
+        button_time = now();
+      }
+      button_count++;
     }
-  } else {
-    button_counter = 0;
+    state_led=0;
+    button_filter = 0;
   }
   
-  if(clean_auto_on)
-  {
-    pinMode(GPIO_LED,OUTPUT);
+  if(button_val>0){
+    if(button_filter<100000)
+    {
+      button_filter++;
+    }
+  } else button_filter = 0;
+  button_old = button_val;
+  
     if(state_led)
     {
         digitalWrite(GPIO_LED,0); // on
@@ -660,59 +489,18 @@ void loop(void)
     {
         digitalWrite(GPIO_LED,1); // off    
     }
-  } else
-  {
-    pinMode(GPIO_LED, INPUT);    
-  }
 }
 
+void periodic_adc() {
+  state_adc  = analogRead(A0);
+  state_rssi = WiFi.RSSI();
+}
 // handles
 void handle_ntp()
 {
   String ntp_res;
   ntp_res = query_ntp();
   server.send(200, "text/plain", "  Time:"+ day() + String(".") + month() + String(".") + year() + String("   ") + hour() + String(":") + minute() + String(":") + second() + String(" \n")+ ntp_res);
-}
-void handle_api()
-{
-  // Get vars for all commands
-  String action = server.arg("action");
-  String value = server.arg("value");
-  String api = server.arg("api");
-
-  if (action == "clean" && value == "start")
-  {
-    handle_roomba_start();
-
-  } else if (action == "dock" && value == "home")
-  {
-    handle_roomba_dock();
-  } else if (action == "reset" && value == "true")
-  {
-    server.send ( 200, "text/html", "Reset ESP OK");
-    delay(500);
-    Serial.println("RESET");
-    ESP.restart();
-  } else {
-    bool changed = false;
-    if(action == "cleanHour")
-    {
-      clean_hour = value.toInt();
-      changed = true;
-    }
-    if(action == "cleanDays")
-    {
-      int bits = value.toInt()&0x7f;
-      if(clean_daily_mask & bits) clean_daily_mask &= ~bits;
-      else clean_daily_mask |= bits;
-      changed = true;
-    }
-    handle_root();
-    if(changed)
-    {
-      saveConfig();
-    }
-  }
 }
 
 void handle_updatefwm_html()
@@ -832,85 +620,16 @@ void handle_filemanager_ajax()
   }
 }
 
-void handle_roomba_start()
-{
-  Serial.println("Starting");
-  mySerial.write(128); // start
-  delay(5);
-  mySerial.write(131); // safe
-  delay(5);
-  mySerial.write(135); // clean
-  Serial.println("I will clean master");
-  server.send(200, "text/plain", "GOGO");
-//  handle_root();
-}
-
-void handle_roomba_dock()
-{
-  mySerial.write(128);
-  delay(5);
-  mySerial.write(131);
-  delay(5);
-  mySerial.write(143);
-  Serial.println("Thank you for letting me rest, going home master");
-  server.send(200, "text/plain", "GOGO Home");
-//  handle_root();
-}
-
-void handle_roomba_stop()
-{
-  mySerial.write(128);
-  delay(5);
-  mySerial.write(131);
-  delay(5);
-  mySerial.write(133); // power
-  Serial.println("Thank you for letting me rest, sleep");
-  server.send(200, "text/plain", "NOGO");
-//  handle_root();
-}
-
 
 void handle_esp_restart() {
+  saveConfig();
   ESP.restart();
 }
-
-void handle_esp_charging() {
-  state_rssi = WiFi.RSSI();
-
-  mySerial.write(128); // start
-  delay(5);
-  mySerial.write(142); // sensor
-  delay(5);
-  mySerial.write((byte)0); // all
-  delay(5);
-  serial_state=1;
-}
-
-void handle_esp_distance() {
-  
-  state_adc  = analogRead(A0);
-  // print out the value you read:
-  //Serial.println(state_adc);
-  if(state_led==0)
-  {
-    if((1<<((weekday()-2)%7)) & clean_daily_mask)
-    {
-      if(hour()==clean_hour)
-      {
-        if(clean_auto_on)
-        {
-          handle_roomba_start();
-          state_led = 1;
-        }      
-      }
-    }
-  }
-}
-
 
 void tick_ntp()
 {
   query_ntp();
+  saveConfig();
 }
 String query_ntp()
 {
@@ -983,38 +702,3 @@ unsigned long sendNTPpacket(IPAddress& address)
   udp.endPacket();
 }
 
-/*
-void handle_esp_pimatic(String data, String variable) {
-String yourdata;
-  char uname[BASE64_LEN];
-  String str = String(Username) + ":" + String(Password);
-  str.toCharArray(uname, BASE64_LEN);
-  memset(unameenc, 0, sizeof(unameenc));
-  base64_encode(unameenc, uname, strlen(uname));
-
-
-  yourdata = "{\"type\": \"value\", \"valueOrExpression\": \"" + data + "\"}";
-
-  client.print("PATCH /api/variables/");
-  client.print(variable);
-  client.print(" HTTP/1.1\r\n");
-  client.print("Authorization: Basic ");
-  client.print(unameenc);
-  client.print("\r\n");
-  client.print("Host: " + host +"\r\n");
-  client.print("Content-Type:application/json\r\n");
-  client.print("Content-Length: ");
-  client.print(yourdata.length());
-  client.print("\r\n\r\n");
-  client.print(yourdata);
- 
-
-  delay(500);
-
-  // Read all the lines of the reply from server and print them to Serial
-  while (client.available()) {
-    String line = client.readStringUntil('\r');
-    //Serial.print(line);
-  }
-}
-*/
