@@ -12,20 +12,16 @@
 
 #include <FS.h>
 #include <Ticker.h>
-
 #include <WiFiUdp.h>
 
-unsigned int localPort = 2380;      // local port to listen for UDP packets
-
+unsigned int localPort = 2382;      // local port to listen for UDP packets
 /* Don't hardwire the IP address or we won't get the benefits of the pool.
  *  Lookup the IP address for the host name instead */
 //IPAddress timeServer(129, 6, 15, 28); // time.nist.gov NTP server
 IPAddress timeServerIP; // time.nist.gov NTP server address
 const char* ntpServerName = "time.nist.gov";
 Ticker ticker_ntp;
-
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
-
 byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 
 // A UDP instance to let us send and receive packets over UDP
@@ -34,33 +30,28 @@ WiFiUDP udp;
 String roombotVersion = "0.4.8";
 String WMode = "1";
 
-#define SERIAL_RX     D5  // pin for SoftwareSerial RX
-#define SERIAL_TX     D6  // pin for SoftwareSerial TX
-#define  GPIO_LED     16
+//#define SERIAL_RX     D5  // pin for SoftwareSerial RX
+//#define SERIAL_TX     D6  // pin for SoftwareSerial TX
+//#define  GPIO_LED     16
+
+#define GPIO_SCK    14
+#define GPIO_DATA   12
+
 #define  GPIO_BUTTON     13
 
-//SoftwareSerial mySerial(SERIAL_RX, SERIAL_TX); // (RX, TX. inverted, buffer)
+#define LED_CLK_ON (digitalWrite(GPIO_SCK, 1))
+#define LED_CLK_OFF (digitalWrite(GPIO_SCK, 0))
+#define LED_DATA_ON (digitalWrite(GPIO_DATA, 1))
+#define LED_DATA_OFF (digitalWrite(GPIO_DATA, 0))
 
 // Div
 File UploadFile;
 String fileName;
 String  BSlocal = "0";
+String strLog="";
 int FSTotal;
 int FSUsed;
 
-//-------------- FSBrowser application -----------
-//format bytes
-String formatBytes(size_t bytes) {
-  if (bytes < 1024) {
-    return String(bytes) + "B";
-  } else if (bytes < (1024 * 1024)) {
-    return String(bytes / 1024.0) + "KB";
-  } else if (bytes < (1024 * 1024 * 1024)) {
-    return String(bytes / 1024.0 / 1024.0) + "MB";
-  } else {
-    return String(bytes / 1024.0 / 1024.0 / 1024.0) + "GB";
-  }
-}
 
 // WIFI
 String ssid    = "mlaiacker";
@@ -73,19 +64,15 @@ MDNSResponder   mdns;
 WiFiClient client;
 
 // Pimatic settings
-String host   = "192.168.x.x";
-const int httpPort    = 80;
-char authVal[40];
-char authValEncoded[40];
 String ClientIP;
 
 long state_rssi;
 int state_adc;
 Ticker ticker_adc;
 
+uint8_t ledDigit[8];
+uint8_t ledPoint[8];
 int serial_state = 0;
-
-int state_led = 1;
 
 float button_dtime = 0;
 int button_time=0;
@@ -93,11 +80,11 @@ int button_time_ms=0;
 int button_dtime_ms;
 
 int power = 0;
+float powerMean = 0;
+int powerSum = 0;
 int energy = 0; 
 int button_count = 0;
-
-int cpu_count = 0;
-int cpu_dcount = ESP.getCycleCount();
+String stateDisplay = "";
 
 #define BASE64_LEN 40
 char unameenc[BASE64_LEN];
@@ -120,7 +107,7 @@ String panelBodyValue   =  "<span class='pull-right'>";
 String panelcenter   =  "<div class='row'><div class='span6' style='text-align:center'>";
 String panelBodyEnd     =  "</span></div></div>";
 
-String inputBodyStart   =  "<form action='' method='POST'><div class='panel panel-default'><div class='panel-body'>";
+String inputBodyStart   =  "<form action='/api' method='POST'><div class='panel panel-default'><div class='panel-body'>";
 String inputBodyName    =  "<div class='form-group'><div class='input-group'><span class='input-group-addon' id='basic-addon1'>";
 String inputBodyPOST    =  "</span><input type='text' name='";
 String inputBodyClose   =  "' class='form-control' aria-describedby='basic-addon1'></div></div>";
@@ -140,11 +127,13 @@ void handle_root()
   Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Counts") + panelBodyValue + button_count + panelBodyEnd;
   Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("dt") + panelBodyValue + button_dtime + String("s ")+ panelBodyEnd;
   Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Event") + panelBodyValue + button_time + String("s") + panelBodyEnd;
-  Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Leistung") + panelBodyValue + 3600.0/button_dtime + String("W ")+ panelBodyEnd;
+  Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Leistung") + panelBodyValue + powerMean + String("W ")+ panelBodyEnd;
 
+  Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Log") + "<pre>" +  strLog + "\n</pre>"+ panelBodyEnd;
 
   String title3 = panelHeaderName + String("Commands") + panelHeaderEnd;
   String commands = panelBodySymbol +                 panelBodyName +                        panelcenter + roombacontrol +  panelBodyEnd;
+         commands+= inputBodyStart + inputBodyName + " Display " + inputBodyPOST + "display' value='" + stateDisplay + inputBodyClose + "</form>";
 
   server.send ( 200, "text/html", header + navbar + containerStart + title1 + IPAddClient + Uptime + Status6 + panelEnd + title3 + commands + panelEnd + containerEnd + siteEnd);
 }
@@ -154,9 +143,10 @@ bool saveConfig() {
   JsonObject& json = jsonBuffer.createObject();
   json["counts"] = button_count;
 
+  strLog+= "t:"+String(now())+"json save count"+button_count+"\n";
   File configFile = SPIFFS.open("/config.json", "w");
   if (!configFile) {
-    Serial.println("Failed to open config file for writing");
+    strLog+=("Failed to open config file for writing\n");
     return false;
   }
 
@@ -167,14 +157,14 @@ bool saveConfig() {
 bool loadConfig() {
   File configFile = SPIFFS.open("/config.json", "r");
   if (!configFile) {
-    Serial.println("Failed to open config file");
+    strLog+=("Failed to open config file for reading\n");
     saveConfig();
     return false;
   }
 
   size_t size = configFile.size();
   if (size > 1024) {
-    Serial.println("Config file size is too large");
+    strLog+=("Config file size is too large\n");
     return false;
   }
 
@@ -190,7 +180,7 @@ bool loadConfig() {
   JsonObject& json = jsonBuffer.parseObject(buf.get());
 
   if (!json.success()) {
-    Serial.println("Failed to parse config file");
+    strLog+=("Failed to parse config file\n");
     return false;
   }
 
@@ -205,11 +195,10 @@ bool loadConfig() {
 void setup(void)
 {
   Serial.begin(115200);
-  pinMode(SERIAL_RX, INPUT);
-  pinMode(SERIAL_TX, OUTPUT);
-  pinMode(GPIO_LED, OUTPUT);
+  pinMode(GPIO_SCK, OUTPUT);
+  pinMode(GPIO_DATA, OUTPUT);
   pinMode(GPIO_BUTTON, INPUT_PULLUP);
-  digitalWrite(GPIO_LED, 0); // on
+//  digitalWrite(GPIO_LED, 0); // on
   
   // Check if SPIFFS is OK
   if (!SPIFFS.begin())
@@ -240,30 +229,31 @@ void setup(void)
   while (WiFi.status() != WL_CONNECTED && i < 31)
   {
     delay(1000);
-    Serial.print(".");
+    strLog+=(".");
     ++i;
   }
   if (WiFi.status() != WL_CONNECTED && i >= 30)
   {
-    Serial.println("");
-    Serial.println("Couldn't connect to network :( ");
+    strLog+=("\n");
+    strLog+=("Couldn't connect to network :( \n");
   }
   else
   {
-    Serial.println("");
-    Serial.print("Connected to ");
-    Serial.println(ssid);
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("Hostname: ");
-    Serial.println(espName);
+    strLog+=("\n");
+    strLog+=("Connected to ");
+    strLog+=(ssid);
+    strLog+=("\nIP address: ");
+    strLog+=(WiFi.localIP());
+    strLog+=("\nHostname: ");
+    strLog+=(espName+"\n");
 
   }
 
-  server.on( "/format", handleFormat );
+  server.on("/format", handleFormat );
   server.on("/", handle_root);
   server.on("/index.html", handle_root);
   server.on("/status", handle_root);
+  server.on("/api", handle_api);
   server.on("/", handle_fupload_html);
   server.on("/updatefwm", handle_updatefwm_html);
   server.on("/fupload", handle_fupload_html);
@@ -325,7 +315,7 @@ void setup(void)
       fileName = upload.filename;
       Serial.setDebugOutput(true);
       //fileName = upload.filename;
-      Serial.println("Upload Name: " + fileName);
+      strLog+=("Upload Name: " + fileName+"\n");
       String path;
       if (fileName.indexOf(".css") >= 0)
       {
@@ -350,12 +340,12 @@ void setup(void)
     {
       if (UploadFile)
         UploadFile.write(upload.buf, upload.currentSize);
-      Serial.println(fileName + " size: " + upload.currentSize);
+      strLog+=(fileName + " size: " + upload.currentSize);
     }
     else if (upload.status == UPLOAD_FILE_END)
     {
-      Serial.print("Upload Size: ");
-      Serial.println(upload.totalSize);  // need 2 commands to work!
+      strLog+=("Upload Size: ");
+      strLog+=(upload.totalSize+"\n");  // need 2 commands to work!
       if (UploadFile)
         UploadFile.close();
     }
@@ -382,15 +372,19 @@ void setup(void)
 
   Serial.println("HTTP server started");
   ticker_ntp.attach(36000, tick_ntp);
-    Serial.println("Starting UDP");
+  Serial.println("Starting UDP");
   udp.begin(localPort);
 
   ticker_adc.attach(10, periodic_adc);
 
   tick_ntp();
-  digitalWrite(GPIO_LED,1); // off
   button_time = now();
   button_time_ms = millis();
+  ledDigit[4]=255;
+  ledDigit[5]=255;
+  ledDigit[6]=255;
+  ledDigit[7]=255;
+  Serial.println(strLog);
 }
 
 String getContentType(String filename) {
@@ -412,7 +406,7 @@ String getContentType(String filename) {
 
 bool handleFileRead(String path)
 {
-  Serial.println("handleFileRead: " + path);
+  //Serial.println("handleFileRead: " + path);
 
   String contentType = getContentType(path);
   String pathWithGz = path + ".gz";
@@ -445,32 +439,30 @@ bool handleFileRead(String path)
 int button_counter;
 int button_filter;
 int button_old, button_val;
+int digit = 0;
+int digitTime = 0; 
 void loop(void)
 {
   server.handleClient();
-  unsigned int cc = ESP.getCycleCount();
-  if((cc - cpu_count)>80000)
-  {
-    //button_dtime_ms++;
-    cpu_dcount = cc - cpu_count;
-    cpu_count  += 80000;
-  }
 
   button_val = digitalRead(GPIO_BUTTON);
   if(!button_val && button_old==1)
   {
     if(button_filter>100)
     {
-//      if(button_count%10==0)
-      {
         button_dtime_ms = (millis() - button_time_ms);
         button_time_ms = millis();
         button_dtime = (float)(now() -button_time)*0 + (float)button_dtime_ms/1000.0;
+        power = 3600.0/button_dtime;
         button_time = now();
-      }
-      button_count++;
+        button_count++;
+        powerSum += power;
+        if(button_count%10==0)
+        {
+          powerMean = powerSum/10.0;
+          powerSum = 0;
+        }
     }
-    state_led=0;
     button_filter = 0;
   }
   
@@ -481,14 +473,31 @@ void loop(void)
     }
   } else button_filter = 0;
   button_old = button_val;
-  
-    if(state_led)
-    {
-        digitalWrite(GPIO_LED,0); // on
-    } else 
-    {
-        digitalWrite(GPIO_LED,1); // off    
+
+  if(millis()>=digitTime)
+  {
+    digitTime = millis() + 1;
+    if(digit>=8){
+      digit=0;
+      ledPoint[0] = 0;
+      ledPoint[1] = 0;
+      ledPoint[2] = 0;
+      ledVal(0,4,power) ;
+//      ledVal(4,4,state_adc) ;
     }
+    uint8_t point = 0;
+
+    ledPoint[3]=button_val;
+    
+    ledSetDigit(digit, ledDigit[digit], ledPoint[digit]);
+    digit++;
+  }
+  
+  if(strLog.length()>300)
+  {
+    strLog.remove(0,1);
+  }
+
 }
 
 void periodic_adc() {
@@ -502,6 +511,42 @@ void handle_ntp()
   ntp_res = query_ntp();
   server.send(200, "text/plain", "  Time:"+ day() + String(".") + month() + String(".") + year() + String("   ") + hour() + String(":") + minute() + String(":") + second() + String(" \n")+ ntp_res);
 }
+void handle_api()
+{
+  handle_display();
+}
+void handle_display()
+{
+    if(server.hasArg("display"))
+    {
+      stateDisplay = server.arg("display");
+      if(stateDisplay.length()>0)
+        ledDigit[4] = stateDisplay.charAt(0);
+      if(stateDisplay.length()>1)
+        ledDigit[5] = stateDisplay.charAt(1);
+      if(stateDisplay.length()>2)
+        ledDigit[6] = stateDisplay.charAt(2);
+      if(stateDisplay.length()>3)
+        ledDigit[7] = stateDisplay.charAt(3);        
+      //ledVal(4,4,stateDisplay);
+    }
+    if(server.hasArg("point"))
+    {
+      String param = server.arg("point");
+      if(param.length()>0)
+        ledPoint[4] = param.charAt(0)=='1';
+      if(param.length()>1)
+        ledPoint[5] = param.charAt(1)=='1';
+      if(param.length()>2)
+        ledPoint[6] = param.charAt(2)=='1';
+      if(param.length()>3)
+        ledPoint[7] = param.charAt(3)=='1';        
+      //ledVal(4,4,stateDisplay);
+    }
+
+    server.send ( 200, "text/plain", "{Leistung:"+String(powerMean)+"W, Counts:"+ button_count+", ADC:" + state_adc + ", Display:"+ stateDisplay+ "}\n");
+}
+
 
 void handle_updatefwm_html()
 {
@@ -567,7 +612,7 @@ void handleFileDelete()
   if (server.args() == 0) return server.send(500, "text/plain", "BAD ARGS");
   String path = server.arg(0);
   if (!path.startsWith("/")) path = "/" + path;
-  Serial.println("handleFileDelete: " + path);
+  strLog+= ("handleFileDelete: " + path +"\n");
   if (path == "/")
     return server.send(500, "text/plain", "BAD PATH");
   if (!SPIFFS.exists(path))
@@ -622,14 +667,26 @@ void handle_filemanager_ajax()
 
 
 void handle_esp_restart() {
-  saveConfig();
+//  saveConfig();
   ESP.restart();
 }
 
 void tick_ntp()
 {
-  query_ntp();
-  saveConfig();
+  strLog+=query_ntp();
+  if(button_count!=0)
+  {
+    saveConfig();
+  }
+  stateDisplay = "";
+  ledDigit[4]=255;
+  ledDigit[5]=255;
+  ledDigit[6]=255;
+  ledDigit[7]=255;
+  ledPoint[4] = 0;
+  ledPoint[5] = 0;
+  ledPoint[6] = 0;
+  ledPoint[7] = 0;
 }
 String query_ntp()
 {
@@ -650,10 +707,8 @@ String query_ntp()
     result += String(cb);
     // We've received a packet, read the data from it
     udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
-
     //the timestamp starts at byte 40 of the received packet and is four bytes,
     // or two words, long. First, esxtract the two words:
-
     unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
     unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
     // combine the four bytes (two words) into a long integer
@@ -671,7 +726,6 @@ String query_ntp()
     // print Unix time:
     result += String(epoch);
     setTime(epoch);
-  
   }
   // wait ten seconds before asking for the time again
   return result;
@@ -680,7 +734,6 @@ String query_ntp()
 // send an NTP request to the time server at the given address
 unsigned long sendNTPpacket(IPAddress& address)
 {
-  Serial.println("sending NTP packet...");
   // set all bytes in the buffer to 0
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
   // Initialize values needed to form NTP request
@@ -701,4 +754,117 @@ unsigned long sendNTPpacket(IPAddress& address)
   udp.write(packetBuffer, NTP_PACKET_SIZE);
   udp.endPacket();
 }
+
+void ledDelay(void)
+{
+}
+
+void ledVal(int start, int len, int val)
+{
+    int divider =1;    
+    int first_none_zero_found = 0;
+    for(int i=1;i<len; i++) divider *=10;
+
+    for(int i=0;i<len; i++)
+    {
+      ledDigit[start+i] = (val/divider)%10;
+      if(ledDigit[start+i]!=0) first_none_zero_found =1;
+      if(first_none_zero_found==0) ledDigit[start+i] = 255;
+      divider /=10;
+    }
+}
+
+
+unsigned char ledDecode(  unsigned char zahl)
+{
+  switch(zahl)
+  {
+    case '0':
+    case  0 : return 255 - 0x3F;
+    case '1':
+    case  1 : return 255 - 0x06;
+    case '2':
+    case  2 : return 255 - 0x5b;
+    case '3':
+    case  3 : return 255 - 0x4f;
+    case '4':
+    case  4 : return 255 - 0x66;
+    case '5':
+    case  5 : return 255 - 0x6d;
+    case '6':
+    case  6 : return 255 - 0x7d;
+    case '7':
+    case  7 : return 255 - 0x07;
+    case '8':
+    case  8 : return 255 - 0x7f;
+    case '9':
+    case  9 : return 255 - 0x6f;
+    case 'a':
+    case 'A': return 255 - 0x77;
+    case 'B':
+    case 'b': return 255 - 0x7c;
+    case 'c': return 255 - 0x58;
+    case 'C': return 255 - 0x39;
+    case 'D':
+    case 'd': return 255 - 0x5e;
+    case 'E':
+    case 'e': return 255 - 0x79;
+    case 'F':
+    case 'f': return 255 - 0x71;
+
+    case 'o': return 255 - 0x5c;
+    case 'H': return 255 - 0x46;
+    case 'J': return 255 - 0x0E;
+    case 'L': return 255 - 0x38;
+
+    case '-': return 255 - 0x40;
+    case '_': return 255 - 0x08;
+    case '[': return 255 - 0x39;
+    case ']': return 255 - 0x0f;
+    case '|': return 255 - 0x30;
+    case '°': return 255 - 0x63;
+
+    default : return 255;
+  }
+}
+
+void ledSetDigit(unsigned char welches, unsigned char was, unsigned char punkt)
+{
+  unsigned char i,data;
+  data = ledDecode(was);
+  if(punkt) data &= 0x7f;
+  for(i=0;i<=7;i++)
+  {
+    LED_CLK_OFF;
+    if(data & (1<<i)) LED_DATA_ON; else LED_DATA_OFF;
+    LED_CLK_ON;
+    LED_CLK_ON;
+    LED_DATA_OFF;
+    LED_CLK_OFF;
+  }
+  for(i=0;i<=7;i++)
+  {
+    LED_CLK_OFF;
+    if(welches != i) LED_DATA_ON; else LED_DATA_OFF;
+    LED_CLK_ON;
+    LED_CLK_ON;
+    LED_DATA_OFF;
+    LED_CLK_OFF;
+  } 
+}
+
+//-------------- FSBrowser application -----------
+//format bytes
+String formatBytes(size_t bytes) {
+  if (bytes < 1024) {
+    return String(bytes) + "B";
+  } else if (bytes < (1024 * 1024)) {
+    return String(bytes / 1024.0) + "KB";
+  } else if (bytes < (1024 * 1024 * 1024)) {
+    return String(bytes / 1024.0 / 1024.0) + "MB";
+  } else {
+    return String(bytes / 1024.0 / 1024.0 / 1024.0) + "GB";
+  }
+}
+
 

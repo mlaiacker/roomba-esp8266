@@ -89,7 +89,7 @@ int clean_daily_mask = 0x1f;
 int clean_hour = 12;
 
 float settings_thresh = 0.0;
-float settings_duration = 1.0;
+int settings_duration = 1.0;
 
 #define BASE64_LEN 40
 char unameenc[BASE64_LEN];
@@ -327,8 +327,6 @@ void setup(void)
   linksCleanHour   +=  "<a href='api?action=cleanHour&value="+String(i)+"'><button type='button' class='btn btn-default'>"+String(i)+"</button></a>\n";
   }
   linksCleanHour+="</div></div>";
-
-
 }
 
 void oneFindDev()
@@ -445,7 +443,7 @@ void handle_roomba_start()
   digitalWrite(GPIO_RELAY, 1); // on
   ticker_off.once(settings_duration, handle_roomba_stop);
   strLog += String(hour()) +":" + String(minute())+ " Starting Fan\n";
-
+  state_led = 1;
   server.send(200, "text/plain", "GOGO");
 }
 
@@ -459,6 +457,7 @@ void handle_roomba_stop()
 {
   strLog += String(hour()) +":" + String(minute())+ " Stop Fan\n";
   digitalWrite(GPIO_RELAY, 0); // off
+  state_led = 0;
   server.send(200, "text/plain", "NOGO");
 }
 
@@ -864,7 +863,7 @@ String getContentType(String filename) {
 
 bool handleFileRead(String path)
 {
-  strLog+=("handleFileRead: " + path+"\n");
+  //strLog+=("handleFileRead: " + path+"\n");
 
   String contentType = getContentType(path);
   String pathWithGz = path + ".gz";
