@@ -29,7 +29,7 @@ Ticker ticker_off;
 unsigned int localPort = 2390;      // local port to listen for UDP packets
 
 /* Don't hardwire the IP address or we won't get the benefits of the pool.
- *  Lookup the IP address for the host name instead */
+    Lookup the IP address for the host name instead */
 //IPAddress timeServer(129, 6, 15, 28); // time.nist.gov NTP server
 IPAddress timeServerIP; // time.nist.gov NTP server address
 const char* ntpServerName = "time.nist.gov";
@@ -41,17 +41,15 @@ byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing pack
 // A UDP instance to let us send and receive packets over UDP
 WiFiUDP udp;
 
-String strLog="";
+String strLog = "";
 String roombotVersion = "0.3.6";
 String WMode = "1";
 
-#define SERIAL_RX     D5  // pin for SoftwareSerial RX
-#define SERIAL_TX     D6  // pin for SoftwareSerial TX
 #define GPIO_RELAY    D7
 SHT1x sht15(D5, D6);//Data, SCK
 
 OneWire oneWire(D1);
-// Pass our oneWire reference to Dallas Temperature. 
+// Pass our oneWire reference to Dallas Temperature.
 DallasTemperature sensors(&oneWire);
 
 //#define  GPIO_LED     16
@@ -72,31 +70,34 @@ String espName    = "esp-humid";
 ESP8266WebServer  server(80);
 MDNSResponder   mdns;
 WiFiClient client;
-String ClientIP;
+//String ClientIP;
 
-long state_rssi;
-int state_adc;
+//long state_rssi;
+//int state_adc;
+//float tempC = 20;
+//float humidity = 50;
 
-float tempC = 20;
-float humidity = 50;
+int state_led = 0;
 
-int serial_state = 0;
-int state_led = 1;
+//int auto_on = 1;
+//int clean_daily_mask = 0x1f;
+//int clean_hour = 12;
 
-int clean_auto_on = 1;
-int32_t clean_dist = 0;
-int clean_daily_mask = 0x1f; 
-int clean_hour = 12;
+StaticJsonBuffer<200>  jsonBufferSettings;
+StaticJsonBuffer<500> jsonBufferData;
 
-float settings_thresh = 0.0;
-int settings_duration = 1.0;
+JsonObject& jsonSettings = jsonBufferSettings.createObject();
+JsonObject& jsonData = jsonBufferData.createObject();
+
+//float settings_thresh = 0.0;
+//int settings_duration = 1.0;
 
 #define BASE64_LEN 40
 char unameenc[BASE64_LEN];
 
 
 // HTML
-String header       =  "<html lang='en'><head><title>"+espName +" control panel</title><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='stylesheet' href='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css'><script src='https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js'></script><script src='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js'></script></head><body>";
+String header       =  "<html lang='en'><head><title>" + espName + " control panel</title><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='stylesheet' href='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css'><script src='https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js'></script><script src='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js'></script></head><body>";
 String navbar       =  "<nav class='navbar navbar-default'><div class='container-fluid'><div class='navbar-header'><a class='navbar-brand' href='/'>esp-humid control panel</a></div><div><ul class='nav navbar-nav'><li><a href='.'><span class='glyphicon glyphicon-info-sign'></span> Status</a></li><li class='dropdown'><a class='dropdown-toggle' data-toggle='dropdown' href='#'><span class='glyphicon glyphicon-cog'></span> Tools<span class='caret'></span></a><ul class='dropdown-menu'><li><a href='/updatefwm'><span class='glyphicon glyphicon-upload'></span> Firmware</a></li><li><a href='/filemanager.html'><span class='glyphicon glyphicon-file'></span> File manager</a></li><li><a href='/fupload'> File upload</a></li><li><a href='/ntp'> NTP</a></li></ul></li><li><a href='https://github.com/incmve/roomba-eps8266/wiki' target='_blank'><span class='glyphicon glyphicon-question-sign'></span> Help</a></li></ul></div></div></nav>";
 String containerStart   =  "<div class='container'><div class='row'>";
 String containerEnd     =  "<div class='clearfix visible-lg'></div></div></div>";
@@ -124,14 +125,19 @@ String linksCleanDays   =  "<a href='api?action=cleanDays&value=1'><button type=
 // Setup
 void setup(void)
 {
+  jsonSettings["Duration"] = 0;
+  jsonSettings["Threshold"] = 0.0f;
+  jsonSettings["cleanTime"] = 0;
+  jsonSettings["cleanDays"] = 0;
+
   int FSTotal;
   int FSUsed;
 
   Serial.begin(115200);
   pinMode(GPIO_RELAY, OUTPUT);
-//  pinMode(GPIO_BUTTON, INPUT_PULLUP);
+  //  pinMode(GPIO_BUTTON, INPUT_PULLUP);
   digitalWrite(GPIO_RELAY, 0); // off
-  
+
   // Check if SPIFFS is OK
   if (!SPIFFS.begin())
   {
@@ -155,13 +161,13 @@ void setup(void)
   }
 
   loadConfig();
-  
+
   WiFi.begin(ssid.c_str(), password.c_str());
   int i = 0;
   while (WiFi.status() != WL_CONNECTED && i < 31)
   {
     delay(1000);
-    strLog +=".";
+    strLog += ".";
     Serial.print(".");
     ++i;
   }
@@ -175,13 +181,18 @@ void setup(void)
   {
     strLog += "\n";
     strLog += "Connected to ";
-    strLog += ssid+"\n";
+    strLog += ssid + "\n";
     Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
     strLog += " Hostname: ";
-    strLog += espName+"\n";
+    strLog += espName + "\n";
     Serial.print(strLog);
   }
+  if (!mdns.begin(espName.c_str())) {
+    strLog+=("Error setting up MDNS responder!");
+  }
+  // Add service to MDNS-SD
+  mdns.addService("http", "tcp", 80);
 
   server.on("/format", handleFormat );
   server.on("/", handle_root);
@@ -198,7 +209,7 @@ void setup(void)
   server.on("/restart", handle_esp_restart);
   server.on("/ntp", handle_ntp);
   server.on("/api", handle_api);
-
+  server.on("/api2", handle_api2);
 
   // Upload firmware:
   server.on("/updatefw2", HTTP_POST, []() {
@@ -278,12 +289,12 @@ void setup(void)
     {
       if (UploadFile)
         UploadFile.write(upload.buf, upload.currentSize);
-      strLog+= fileName + " size: " + upload.currentSize+ "\n";
+      strLog += fileName + " size: " + upload.currentSize + "\n";
     }
     else if (upload.status == UPLOAD_FILE_END)
     {
-      strLog+= "Upload Size: ";
-      strLog+= upload.totalSize + "\n";  // need 2 commands to work!
+      strLog += "Upload Size: ";
+      strLog += upload.totalSize + "\n"; // need 2 commands to work!
       if (UploadFile)
         UploadFile.close();
     }
@@ -297,36 +308,30 @@ void setup(void)
       server.send(404, "text/plain", "FileNotFound");
   });
 
-  if (!mdns.begin(espName.c_str(), WiFi.localIP())) {
-    Serial.println("Error setting up MDNS responder!");
-    while (1) {
-      delay(1000);
-    }
-  }
   server.begin();
   // Start up the library ds1820
   sensors.begin();
-    // get IP
-  IPAddress ip = WiFi.localIP();
-  ClientIP = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
+  // get IP
+  //IPAddress ip = WiFi.localIP();
+  //ClientIP = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
 
   strLog += "HTTP server started\n";
 
   ticker_state_charge.attach(30, handle_esp_charging);
   ticker_state_dist.attach(60, tick_read);
   ticker_ntp.attach(36000, tick_ntp);
-  
+
   udp.begin(localPort);
 
   tick_ntp();
   tick_read();
-//  digitalWrite(GPIO_LED,1); // off
+  //  digitalWrite(GPIO_LED,1); // off
 
-  for(int i=0;i<24;i++)
+  for (int i = 0; i < 24; i++)
   {
-  linksCleanHour   +=  "<a href='api?action=cleanHour&value="+String(i)+"'><button type='button' class='btn btn-default'>"+String(i)+"</button></a>\n";
+    linksCleanHour   +=  "<a href='api?action=cleanTime&value=" + String(i) + "'><button type='button' class='btn btn-default'>" + String(i) + "</button></a>\n";
   }
-  linksCleanHour+="</div></div>";
+  linksCleanHour += "</div></div>";
 }
 
 void oneFindDev()
@@ -336,9 +341,9 @@ void oneFindDev()
   strLog += (" devices.\n");
   oneWire.reset_search();
   // assigns the first address found to insideThermometer
-  int i=0;
-  while(oneWire.search(oneAddr[i]) && i<8){
-    strLog += "Found: "+ printAddress(oneAddr[i]) + "\n";
+  int i = 0;
+  while (oneWire.search(oneAddr[i]) && i < 8) {
+    strLog += "Found: " + printAddress(oneAddr[i]) + "\n";
     sensors.requestTemperatures();
     strLog += "temp=" + String(sensors.getTempC(oneAddr[i])) + "\n";
     i++;
@@ -351,75 +356,106 @@ String printAddress(DeviceAddress deviceAddress)
   for (uint8_t i = 0; i < 8; i++)
   {
     // zero pad the address if necessary
-    if (deviceAddress[i] < 16) result+=("0");
-    result+= String(deviceAddress[i], HEX);
+    if (deviceAddress[i] < 16) result += ("0");
+    result += String(deviceAddress[i], HEX);
   }
   return result;
+}
+
+void updateData()
+{
+  sensors.requestTemperatures();
+  for (int i = 0; i < 8; i++)
+  {
+    if (oneAddr[i][0] == 0x28)
+    {
+      jsonData[printAddress(oneAddr[i])] = sensors.getTempC(oneAddr[i]);
+    }
+  }
+  jsonData["Fan"] = getState();
+  int clean_daily_mask = jsonSettings["cleanDays"];
+  String clean_days = "";
+  if (clean_daily_mask & 1)
+  {
+    clean_days += String("M");
+  } else clean_days += String("_");
+  if (clean_daily_mask & 2)
+  {
+    clean_days += String("T");
+  } else clean_days += String("_");
+  if (clean_daily_mask & 4)
+  {
+    clean_days += String("W");
+  } else clean_days += String("_");
+  if (clean_daily_mask & 8)
+  {
+    clean_days += String("T");
+  } else clean_days += String("_");
+  if (clean_daily_mask & 16)
+  {
+    clean_days += String("F");
+  } else clean_days += String("_");
+  if (clean_daily_mask & 32)
+  {
+    clean_days += String("S");
+  } else clean_days += String("_");
+  if (clean_daily_mask & 64)
+  {
+    clean_days += String("S");
+  } else clean_days += String("_");
+  jsonData["Clean Days"] = clean_days;
+  jsonData["Clean Time"] = jsonSettings["cleanTime"].as<int>();
 }
 
 // ROOT page ##############
 void handle_root()
 {
-  String clean_days="";
-  if(clean_daily_mask & 1)
-  {
-      clean_days += String("M");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 2)
-  {
-      clean_days += String("T");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 4)
-  {
-      clean_days += String("W");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 8)
-  {
-      clean_days += String("T");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 16)
-  {
-      clean_days += String("F");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 32)
-  {
-      clean_days += String("S");
-  } else clean_days += String("_");
-  if(clean_daily_mask & 64)
-  {
-      clean_days += String("S");
-  } else clean_days += String("_");
-//  TimeElements tm;
-//  breakTime(now(),tm);
-   
-  String title1     = panelHeaderName + espName +String(" Settings") + panelHeaderEnd;
-  String IPAddClient    = panelBodySymbol + String("globe") + panelBodyName + String("IP Address") + panelBodyValue + ClientIP + String(" ") + state_rssi + String("dBm") + panelBodyEnd;
+  updateData();
 
-  String Uptime     = panelBodySymbol + String("time") + panelBodyName + String("Time UTC") + panelBodyValue + day() + String(".") + month() + String(".") + year() + String("   ") + hour() + String(":") + minute() + String(":") + second() + String(" ") + panelBodyEnd;
-  String CleanTime  = panelBodySymbol + String("time") + panelBodyName + String("Clean Time") + panelBodyValue + clean_hour + String(" h") + panelBodyEnd;
-  String CleanDays  = panelBodySymbol + String("time") + panelBodyName + String("Clean Days") + panelBodyValue + clean_days + String(" ") + panelBodyEnd;
+  String title1     = panelHeaderName + espName + String(" Data") + panelHeaderEnd;
+  String StatusHTML = "";
 
-  String Status4     = panelBodySymbol + String("info-sign") + panelBodyName + String("Humid") + panelBodyValue + humidity +String("%") + panelBodyEnd;
-  String Status5     = panelBodySymbol + String("info-sign") + panelBodyName + String("Temp") + panelBodyValue + tempC + String("&degC ") + panelBodyEnd;
-  String Status6     = panelBodySymbol + String("info-sign") + panelBodyName + String("ADC") + panelBodyValue + state_adc + String(" AutoClean:")+ clean_auto_on + String(" Fan:")+ digitalRead(GPIO_RELAY) + panelBodyEnd;
-  sensors.requestTemperatures();
-  for(int i=0;i<8;i++)
+  //StatusHTML+=    panelBodySymbol + String("globe") + panelBodyName + String("RSSI") + panelBodyValue + jsonData["rssi"] + String("dBm") + panelBodyEnd;
+  StatusHTML +=   panelBodySymbol + String("time") + panelBodyName + String("Time UTC") + panelBodyValue + day() + String(".") + month() + String(".") + year() + String("   ") + hour() + String(":") + minute() + String(":") + second() + String(" ") + panelBodyEnd;
+
+  for (JsonObject::iterator it = jsonData.begin(); it != jsonData.end(); ++it)
   {
-    if(oneAddr[i][0]==0x28)
-    {
-      Status6 += panelBodySymbol + String("info-sign") + panelBodyName + printAddress(oneAddr[i])+ panelBodyValue + String(sensors.getTempC(oneAddr[i])) + String("&degC ") +  panelBodyEnd;
-    }
+    // *it contains the key/value pair
+    const char* key = it->key;
+
+    // it->value contains the JsonVariant which can be casted as usual
+    const char* value = it->value;
+
+    // this also works
+    //value = it->value.as<const char*>();
+    StatusHTML += panelBodySymbol + String("info-sign") + panelBodyName + it->key + panelBodyValue + it->value.as<String>() + panelBodyEnd;
   }
-  Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Log") + "<pre>" +  strLog + "\n</pre>"+ panelBodyEnd;
+
+  //String CleanTime  = panelBodySymbol + String("time") + panelBodyName + String("Clean Time") + panelBodyValue + jsonData["Clean Hour"] + String(" h") + panelBodyEnd;
+  //String CleanDays  = panelBodySymbol + String("time") + panelBodyName + String("Clean Days") + panelBodyValue + jsonData["Clean Days"] + String(" ") + panelBodyEnd;
+
+  //  StatusHTML+= panelBodySymbol + String("info-sign") + panelBodyName + String("Humid") + panelBodyValue + jsonData["Humidity"].as<String>() +String("%") + panelBodyEnd;
+  //  StatusHTML+= panelBodySymbol + String("info-sign") + panelBodyName + String("Temp") + panelBodyValue + jsonData["Temperature"].as<String>() + String("&degC ") + panelBodyEnd;
+  //  StatusHTML+= panelBodySymbol + String("info-sign") + panelBodyName + String("ADC") + panelBodyValue + jsonData["ADC"].as<String>() + panelBodyEnd;
+  StatusHTML += panelBodySymbol + String("info-sign") + panelBodyName + String("Log") + "<pre>" +  strLog + "\n</pre>" + panelBodyEnd;
 
   String title3 = panelHeaderName + String("Commands") + panelHeaderEnd;
   String commands = panelBodySymbol +                 panelBodyName +                        panelcenter + roombacontrol +  panelBodyEnd;
-         commands+= panelBodySymbol + String("time")+ panelBodyName + String("Clean Time") + panelcenter + linksCleanHour + panelBodyEnd;
-         commands+= panelBodySymbol + String("time")+ panelBodyName + String("Clean Days") + panelcenter + linksCleanDays + panelBodyEnd;
-         commands+= inputBodyStart + inputBodyName + " Threshold[%] " + inputBodyPOST + "thresh' value='" + settings_thresh + inputBodyClose + "</form>";
-         commands+= inputBodyStart + inputBodyName + " Duration[s] " + inputBodyPOST + "duration' value='" + settings_duration + inputBodyClose + "</form>";
+  commands += panelBodySymbol + String("time") + panelBodyName + String("Clean Time") + panelcenter + linksCleanHour + panelBodyEnd;
+  commands += panelBodySymbol + String("time") + panelBodyName + String("Clean Days") + panelcenter + linksCleanDays + panelBodyEnd;
+  
+  for (JsonObject::iterator it = jsonSettings.begin(); it != jsonSettings.end(); ++it)
+  {
+    // *it contains the key/value pair
+    const char* key = it->key;
+    // it->value contains the JsonVariant which can be casted as usual
+    const char* value = it->value;
+    commands += inputBodyStart + inputBodyName + " " + it->key + " " + inputBodyPOST + it->key + "' value='" + it->value.as<String>() + inputBodyClose + "</form>";
+  }
+  //         commands+= inputBodyStart + inputBodyName + " Threshold[%] " + inputBodyPOST + "thresh' value='" + jsonSettings["Threshold"].as<String>() + inputBodyClose + "</form>";
+  //         commands+= inputBodyStart + inputBodyName + " Duration[s] " + inputBodyPOST + "duration' value='" + jsonSettings["Duration"].as<String>() + inputBodyClose + "</form>";
 
-  server.send ( 200, "text/html", header + navbar + containerStart + title1 + IPAddClient + Uptime + CleanTime + CleanDays + Status4 + Status5 + Status6 + panelEnd + title3 + commands + panelEnd + containerEnd + siteEnd);
+  server.send ( 200, "text/html", header + navbar + containerStart + title1 + StatusHTML + panelEnd + title3 + commands + panelEnd + containerEnd + siteEnd);
 }
 
 
@@ -430,77 +466,103 @@ bool handle_roomba_state()
 void loop(void)
 {
   server.handleClient();
-  if(strLog.length()>200)
+  if (strLog.length() > 300)
   {
-    strLog.remove(0,1);
+    strLog.remove(0, 1);
   }
-  
+
 }
 
 
 void handle_roomba_start()
 {
-  digitalWrite(GPIO_RELAY, 1); // on
-  ticker_off.once(settings_duration, handle_roomba_stop);
-  strLog += String(hour()) +":" + String(minute())+ " Starting Fan\n";
-  state_led = 1;
+  start();
   server.send(200, "text/plain", "GOGO");
 }
 
 void handle_roomba_dock()
 {
   server.send(200, "text/plain", "GOGO Home");
-//  handle_root();
+  //  handle_root();
 }
 
 void handle_roomba_stop()
 {
-  strLog += String(hour()) +":" + String(minute())+ " Stop Fan\n";
-  digitalWrite(GPIO_RELAY, 0); // off
-  state_led = 0;
+  stop();
   server.send(200, "text/plain", "NOGO");
 }
 
+void start()
+{
+  digitalWrite(GPIO_RELAY, 1); // on
+  ticker_off.once(jsonSettings["Duration"].as<int>(), stop);
+  strLog += String(hour()) + ":" + String(minute()) + " Starting Fan\n";
+}
+
+void stop()
+{
+  strLog += String(hour()) + ":" + String(minute()) + " Stop Fan\n";
+  digitalWrite(GPIO_RELAY, 0); // off
+  state_led = 0;
+}
+
+int getState()
+{
+  return digitalRead(GPIO_RELAY);
+}
+
+
 
 void handle_esp_restart() {
+  stop();
   ESP.restart();
 }
 
 void handle_esp_charging() {
-  state_rssi = WiFi.RSSI();
+  jsonData["RSSI"] = WiFi.RSSI();
 }
 
 void tick_read() {
-  state_adc  = analogRead(A0);
+  jsonData["ADC"]  = analogRead(A0);
 
-  tempC = sht15.readTemperatureC();  
-  humidity = sht15.readHumidity(); 
-  
+  float tempC = jsonData["Temperature"] = sht15.readTemperatureC();
+  float humidity = jsonData["Humidity"] = sht15.readHumidity();
+
   Serial.println(millis());
   Serial.print(" Temp = ");
   Serial.print(tempC);
   Serial.println("C");
   Serial.print(" Humidity = ");
-  Serial.print(humidity); 
+  Serial.print(humidity);
   Serial.println("%");
 
-  if(state_led==0)
+  int clean_hour = jsonSettings["cleanTime"];
+  float settings_thresh = jsonSettings["Threshold"];
+  if (getState() == 0)
   {
-    if((1<<((weekday()-2)%7)) & clean_daily_mask)
+    int clean_daily_mask = jsonSettings["cleanDays"];
+    if ((1 << ((weekday() - 2) % 7)) & clean_daily_mask)
     {
-      if(hour()==clean_hour)
+      if (hour() == clean_hour)
       {
-          if(humidity>settings_thresh)
-          {
-            handle_roomba_start();
-            state_led = 1;
-          }         
+        if (humidity > settings_thresh &&  state_led == 0)
+        {
+          strLog += "Humidity= " + String(humidity) + "\n";
+          start();
+          state_led = 1;
+        }
       }
     }
   }
-  if(hour()!=clean_hour)
+        if (humidity < settings_thresh*0.7 && getState())
+        {
+          strLog += "Humidity= " + String(humidity) + "\n";
+          stop();
+        }
+
+  if (hour() != clean_hour)
   {
-      state_led = 0;    
+    state_led = 0;
   }
 }
 
@@ -510,19 +572,39 @@ void handle_ntp()
 {
   String ntp_res;
   ntp_res = query_ntp();
-  server.send(200, "text/plain", "  Time:"+ day() + String(".") + month() + String(".") + year() + String("   ") + hour() + String(":") + minute() + String(":") + second() + String(" \n")+ ntp_res);
+  server.send(200, "text/plain", "  Time:" + day() + String(".") + month() + String(".") + year() + String("   ") + hour() + String(":") + minute() + String(":") + second() + String(" \n") + ntp_res);
 }
+
 void handle_api()
+{
+  handle_settings();
+  handle_root();
+}
+
+void handle_api2()
+{
+  handle_settings();
+  updateData();
+  String data;
+  jsonData.printTo(data);
+  String settings;
+  jsonSettings.printTo(settings);
+  server.send(200, "text/plain", "{\n\"Data\":" + data + ",\n\"Settings\":" + settings + "\n}");
+}
+
+void handle_settings()
 {
   // Get vars for all commands
   String action = server.arg("action");
   String value = server.arg("value");
   String api = server.arg("api");
 
-  if (action == "clean" && value == "start")
+  if (action == "clean" && value == "stop")
   {
-    handle_roomba_start();
-
+    stop();
+  } else if (action == "clean" && value == "start")
+  {
+    start();
   } else if (action == "dock" && value == "home")
   {
     handle_roomba_dock();
@@ -534,30 +616,51 @@ void handle_api()
     ESP.restart();
   } else {
     bool changed = false;
-    if(action == "cleanHour")
+    if (action == "cleanDays")
     {
-      clean_hour = value.toInt();
-      changed = true;
-    }
-    if(action == "cleanDays")
-    {
-      int bits = value.toInt()&0x7f;
-      if(clean_daily_mask & bits) clean_daily_mask &= ~bits;
+      int bits = value.toInt() & 0x7f;
+      int clean_daily_mask = jsonSettings["cleanDays"];
+      if (clean_daily_mask & bits) clean_daily_mask &= ~bits;
       else clean_daily_mask |= bits;
+      jsonSettings["cleanDays"]  = clean_daily_mask;
       changed = true;
+    } else {
+      if (jsonSettings.containsKey(action))
+      {
+        jsonSettings[action] = value.toInt();
+        changed = true;
+      }
     }
-    if(server.hasArg("thresh"))
+    for (JsonObject::iterator it = jsonSettings.begin(); it != jsonSettings.end(); ++it)
     {
-      settings_thresh = server.arg("thresh").toFloat();
-      changed = true;
+      if (server.hasArg(it->key))
+      {
+        if(it->value.is<float>())
+          it->value = server.arg(it->key).toFloat();
+        else if(it->value.is<int>())
+          it->value = server.arg(it->key).toInt();        
+        changed = true;
+      }
     }
-    if(server.hasArg("duration"))
-    {
-      settings_duration = server.arg("duration").toFloat();
+
+    /*
+      if(action == "cleanTime")
+      {
+      jsonSettings["cleanTime"] = value.toInt();
       changed = true;
-    }
-    handle_root();
-    if(changed)
+      }
+      if(server.hasArg("thresh"))
+      {
+      jsonSettings["Threshold"] = server.arg("thresh").toFloat();
+      changed = true;
+      }
+      if(server.hasArg("duration"))
+      {
+      jsonSettings["Duration"] = server.arg("duration").toInt();
+      changed = true;
+      }
+    */
+    if (changed)
     {
       saveConfig();
     }
@@ -628,7 +731,7 @@ void handleFileDelete()
   if (server.args() == 0) return server.send(500, "text/plain", "BAD ARGS");
   String path = server.arg(0);
   if (!path.startsWith("/")) path = "/" + path;
-  strLog+=("handleFileDelete: " + path);
+  strLog += ("handleFileDelete: " + path);
   if (path == "/")
     return server.send(500, "text/plain", "BAD PATH");
   if (!SPIFFS.exists(path))
@@ -641,25 +744,25 @@ void handleFileDelete()
 void handleFormat()
 {
   server.send ( 200, "text/html", "OK");
-  strLog+=("Format SPIFFS");
+  strLog += ("Format SPIFFS");
   if (SPIFFS.format())
   {
     if (!SPIFFS.begin())
     {
-      strLog+=("Format SPIFFS failed\n");
+      strLog += ("Format SPIFFS failed\n");
     }
   }
   else
   {
-    strLog+=("Format SPIFFS failed\n");
+    strLog += ("Format SPIFFS failed\n");
   }
   if (!SPIFFS.begin())
   {
-    strLog+=("SPIFFS failed, needs formatting\n");
+    strLog += ("SPIFFS failed, needs formatting\n");
   }
   else
   {
-    strLog+=("SPIFFS mounted\n");
+    strLog += ("SPIFFS mounted\n");
   }
 }
 void handle_filemanager_ajax()
@@ -683,19 +786,19 @@ void handle_filemanager_ajax()
 
 void tick_ntp()
 {
-  strLog+=query_ntp();
+  strLog += query_ntp();
   oneFindDev();
 }
 String query_ntp()
 {
-  String result="";
-    //get a random server from the pool
-  WiFi.hostByName(ntpServerName, timeServerIP); 
+  String result = "";
+  //get a random server from the pool
+  WiFi.hostByName(ntpServerName, timeServerIP);
 
   sendNTPpacket(timeServerIP); // send an NTP packet to a time server
   // wait to see if a reply is available
   delay(1000);
-  
+
   int cb = udp.parsePacket();
   if (!cb) {
     result += ("no packet yet\n");
@@ -716,7 +819,7 @@ String query_ntp()
     unsigned long secsSince1900 = highWord << 16 | lowWord;
     result += ("\nSeconds since Jan 1 1900 = " );
     result += String(secsSince1900);
-    if(secsSince1900==0) return result;
+    if (secsSince1900 == 0) return result;
     // now convert NTP time into everyday time:
     result += ("\nUnix time = ");
     // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
@@ -726,7 +829,7 @@ String query_ntp()
     // print Unix time:
     result += String(epoch);
     setTime(epoch);
-  
+
   }
   // wait ten seconds before asking for the time again
   return result;
@@ -735,7 +838,7 @@ String query_ntp()
 // send an NTP request to the time server at the given address
 unsigned long sendNTPpacket(IPAddress& address)
 {
-  strLog+=("sending NTP packet...\n");
+  strLog += ("sending NTP packet...\n");
   // set all bytes in the buffer to 0
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
   // Initialize values needed to form NTP request
@@ -772,35 +875,38 @@ String formatBytes(size_t bytes) {
 }
 
 bool saveConfig() {
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& json = jsonBuffer.createObject();
-  json["cleanTime"] = clean_hour;
-  json["cleanDays"] = clean_daily_mask;
-  json["cleanAuto"] = clean_auto_on;
-  json["thresh"] = settings_thresh;
-  json["duration"] = settings_duration;
-
+  /*
+    StaticJsonBuffer<200> jsonBuffer;
+    JsonObject& json = jsonBuffer.createObject();
+    json["cleanTime"] = clean_hour;
+    json["cleanDays"] = clean_daily_mask;
+    json["cleanAuto"] = clean_auto_on;
+    json["thresh"] = settings_thresh;
+    json["duration"] = settings_duration;
+  */
   File configFile = SPIFFS.open("/config.json", "w");
   if (!configFile) {
-    strLog+=("Failed to open config file for writing\n");
+    strLog += ("Failed to open config file for writing\n");
     return false;
   }
+  strLog += ("saved Settings\n");
 
-  json.printTo(configFile);
+  jsonSettings.printTo(configFile);
+  configFile.close();
   return true;
 }
 
 bool loadConfig() {
   File configFile = SPIFFS.open("/config.json", "r");
   if (!configFile) {
-    strLog+=("Failed to open config file\n");
+    strLog += ("Failed to open config file\n");
     saveConfig();
     return false;
   }
 
   size_t size = configFile.size();
   if (size > 1024) {
-    strLog+=("Config file size is too large\n");
+    strLog += ("Config file size is too large\n");
     return false;
   }
 
@@ -811,36 +917,54 @@ bool loadConfig() {
   // buffer to be mutable. If you don't use ArduinoJson, you may as well
   // use configFile.readString instead.
   configFile.readBytes(buf.get(), size);
+  configFile.close();
 
   StaticJsonBuffer<200> jsonBuffer;
   JsonObject& json = jsonBuffer.parseObject(buf.get());
-
   if (!json.success()) {
-    strLog+=("Failed to parse config file\n");
+    strLog += ("Failed to parse config file\n");
     return false;
   }
 
-  if(json.containsKey("cleanTime"))
+  for (JsonObject::iterator it = json.begin(); it != json.end(); ++it)
   {
-    clean_hour = json["cleanTime"];
-  }
-  if(json.containsKey("cleanDays"))
-  {
-    clean_daily_mask = json["cleanDays"];
-  }
-  if(json.containsKey("cleanAuto"))
-  {
-    clean_auto_on = json["cleanAuto"];
-  }
-  if(json.containsKey("thresh"))
-  {
-    settings_thresh = json["thresh"];
-  }
-  if(json.containsKey("duration"))
-  {
-    settings_duration = json["duration"];
+    if (strlen(it->key) > 1)
+    {
+      if(it->value.is<float>())
+      {
+        jsonSettings.set(it->key, it->value.as<float>());
+      } else if(it->value.is<int>())
+      {
+        jsonSettings.set(it->key, it->value.as<int>());
+      }
+    }
   }
 
+  String tmp;
+  jsonSettings.printTo(tmp);
+  strLog +=  tmp;
+  /*
+    if(json.containsKey("cleanTime"))
+    {
+      clean_hour = json["cleanTime"];
+    }
+    if(json.containsKey("cleanDays"))
+    {
+      clean_daily_mask = json["cleanDays"];
+    }
+    if(json.containsKey("cleanAuto"))
+    {
+      auto_on = json["cleanAuto"];
+    }
+    if(json.containsKey("thresh"))
+    {
+      settings_thresh = json["thresh"];
+    }
+    if(json.containsKey("duration"))
+    {
+      settings_duration = json["duration"];
+    }
+  */
   return true;
 }
 
