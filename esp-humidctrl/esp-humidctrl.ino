@@ -441,7 +441,7 @@ void handle_root()
 
   String title3 = panelHeaderName + String("Commands") + panelHeaderEnd;
   String commands = panelBodySymbol +                 panelBodyName +                        panelcenter + roombacontrol +  panelBodyEnd;
-  commands += panelBodySymbol + String("time") + panelBodyName + String("Clean Time") + panelcenter + linksCleanHour + panelBodyEnd;
+  //commands += panelBodySymbol + String("time") + panelBodyName + String("Clean Time") + panelcenter + linksCleanHour + panelBodyEnd;
   commands += panelBodySymbol + String("time") + panelBodyName + String("Clean Days") + panelcenter + linksCleanDays + panelBodyEnd;
   
   for (JsonObject::iterator it = jsonSettings.begin(); it != jsonSettings.end(); ++it)
