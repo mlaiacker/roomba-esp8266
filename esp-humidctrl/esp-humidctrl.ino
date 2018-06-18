@@ -4,7 +4,6 @@
 
 #include <Time.h>
 #include <TimeLib.h>
-#include <Base64_lib.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
@@ -26,7 +25,7 @@ Ticker ticker_state_dist;
 Ticker ticker_ntp;
 Ticker ticker_off;
 
-unsigned int localPort = 2390;      // local port to listen for UDP packets
+unsigned int localPort = 5390;      // local port to listen for UDP packets
 
 /* Don't hardwire the IP address or we won't get the benefits of the pool.
     Lookup the IP address for the host name instead */
@@ -45,15 +44,14 @@ String strLog = "";
 String roombotVersion = "0.3.6";
 String WMode = "1";
 
-#define GPIO_RELAY    D7
-SHT1x sht15(D5, D6);//Data, SCK
-
 OneWire oneWire(D1);
+#define GPIO_RELAY2   D2
+SHT1x sht15(D5, D6);//Data, SCK
+#define GPIO_RELAY    D7
+#define GPIO_RELAY3   D8
+
 // Pass our oneWire reference to Dallas Temperature.
 DallasTemperature sensors(&oneWire);
-
-//#define  GPIO_LED     16
-//#define  GPIO_BUTTON     13
 
 // Div
 File UploadFile;
@@ -64,37 +62,24 @@ String  BSlocal = "0";
 // WIFI
 String ssid    = "mlaiacker";
 String password = "83kdfiafo274DF";
+//String ssid    = "FRITZ!Box 7430 FJ";
+//String password = "50782790526795774722";
+
 String espName    = "esp-humid";
 
 // webserver
 ESP8266WebServer  server(80);
 MDNSResponder   mdns;
 WiFiClient client;
-//String ClientIP;
-
-//long state_rssi;
-//int state_adc;
-//float tempC = 20;
-//float humidity = 50;
 
 int state_led = 0;
+int started_by_timer = 0;
 
-//int auto_on = 1;
-//int clean_daily_mask = 0x1f;
-//int clean_hour = 12;
+StaticJsonDocument<500>  jsonBufferSettings;
+StaticJsonDocument<500> jsonBufferData;
 
-StaticJsonBuffer<200>  jsonBufferSettings;
-StaticJsonBuffer<500> jsonBufferData;
-
-JsonObject& jsonSettings = jsonBufferSettings.createObject();
-JsonObject& jsonData = jsonBufferData.createObject();
-
-//float settings_thresh = 0.0;
-//int settings_duration = 1.0;
-
-#define BASE64_LEN 40
-char unameenc[BASE64_LEN];
-
+JsonObject& jsonSettings = jsonBufferSettings.to<JsonObject>();
+JsonObject& jsonData = jsonBufferData.to<JsonObject>();
 
 // HTML
 String header       =  "<html lang='en'><head><title>" + espName + " control panel</title><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='stylesheet' href='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css'><script src='https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js'></script><script src='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js'></script></head><body>";
@@ -126,6 +111,10 @@ String linksCleanDays   =  "<a href='api?action=cleanDays&value=1'><button type=
 void setup(void)
 {
   jsonSettings["Duration"] = 0;
+  jsonSettings["DurationA"] = 0;
+  jsonSettings["DurationB"] = 0;
+  jsonSettings["DurationC"] = 0;
+  jsonSettings["Power"] = 10;
   jsonSettings["Threshold"] = 0.0f;
   jsonSettings["cleanTime"] = 0;
   jsonSettings["cleanDays"] = 0;
@@ -135,9 +124,14 @@ void setup(void)
 
   Serial.begin(115200);
   pinMode(GPIO_RELAY, OUTPUT);
+  pinMode(GPIO_RELAY2, OUTPUT);
+  pinMode(GPIO_RELAY3, OUTPUT);
   //  pinMode(GPIO_BUTTON, INPUT_PULLUP);
   digitalWrite(GPIO_RELAY, 0); // off
-
+  digitalWrite(GPIO_RELAY2, 0); // off
+  digitalWrite(GPIO_RELAY3, 0); // off
+  analogWriteFreq(2500);
+  
   // Check if SPIFFS is OK
   if (!SPIFFS.begin())
   {
@@ -372,7 +366,9 @@ void updateData()
       jsonData[printAddress(oneAddr[i])] = sensors.getTempC(oneAddr[i]);
     }
   }
-  jsonData["Fan"] = getState();
+//  jsonData["PumpA"] = getState();
+//  jsonData["PumpB"] = digitalRead(GPIO_RELAY2);
+//  jsonData["PumpC"] = digitalRead(GPIO_RELAY3);
   int clean_daily_mask = jsonSettings["cleanDays"];
   String clean_days = "";
   if (clean_daily_mask & 1)
@@ -427,16 +423,9 @@ void handle_root()
     const char* value = it->value;
 
     // this also works
-    //value = it->value.as<const char*>();
     StatusHTML += panelBodySymbol + String("info-sign") + panelBodyName + it->key + panelBodyValue + it->value.as<String>() + panelBodyEnd;
   }
 
-  //String CleanTime  = panelBodySymbol + String("time") + panelBodyName + String("Clean Time") + panelBodyValue + jsonData["Clean Hour"] + String(" h") + panelBodyEnd;
-  //String CleanDays  = panelBodySymbol + String("time") + panelBodyName + String("Clean Days") + panelBodyValue + jsonData["Clean Days"] + String(" ") + panelBodyEnd;
-
-  //  StatusHTML+= panelBodySymbol + String("info-sign") + panelBodyName + String("Humid") + panelBodyValue + jsonData["Humidity"].as<String>() +String("%") + panelBodyEnd;
-  //  StatusHTML+= panelBodySymbol + String("info-sign") + panelBodyName + String("Temp") + panelBodyValue + jsonData["Temperature"].as<String>() + String("&degC ") + panelBodyEnd;
-  //  StatusHTML+= panelBodySymbol + String("info-sign") + panelBodyName + String("ADC") + panelBodyValue + jsonData["ADC"].as<String>() + panelBodyEnd;
   StatusHTML += panelBodySymbol + String("info-sign") + panelBodyName + String("Log") + "<pre>" +  strLog + "\n</pre>" + panelBodyEnd;
 
   String title3 = panelHeaderName + String("Commands") + panelHeaderEnd;
@@ -452,9 +441,6 @@ void handle_root()
     const char* value = it->value;
     commands += inputBodyStart + inputBodyName + " " + it->key + " " + inputBodyPOST + it->key + "' value='" + it->value.as<String>() + inputBodyClose + "</form>";
   }
-  //         commands+= inputBodyStart + inputBodyName + " Threshold[%] " + inputBodyPOST + "thresh' value='" + jsonSettings["Threshold"].as<String>() + inputBodyClose + "</form>";
-  //         commands+= inputBodyStart + inputBodyName + " Duration[s] " + inputBodyPOST + "duration' value='" + jsonSettings["Duration"].as<String>() + inputBodyClose + "</form>";
-
   server.send ( 200, "text/html", header + navbar + containerStart + title1 + StatusHTML + panelEnd + title3 + commands + panelEnd + containerEnd + siteEnd);
 }
 
@@ -476,6 +462,7 @@ void loop(void)
 
 void handle_roomba_start()
 {
+  state_led=7;
   start();
   server.send(200, "text/plain", "GOGO");
 }
@@ -494,16 +481,48 @@ void handle_roomba_stop()
 
 void start()
 {
-  digitalWrite(GPIO_RELAY, 1); // on
-  ticker_off.once(jsonSettings["Duration"].as<int>(), stop);
-  strLog += String(hour()) + ":" + String(minute()) + " Starting Fan\n";
+  int power = jsonSettings["Power"].as<int>();
+  if(state_led&1)
+  {
+    state_led &= ~(1);
+    if(jsonSettings["DurationA"].as<int>()>0)
+    {
+      analogWrite(GPIO_RELAY, power); // on
+      ticker_off.once(jsonSettings["DurationA"].as<int>(), stop);
+    }
+  } else if(state_led&2)
+  {
+    state_led &= ~(2);
+    if(jsonSettings["DurationB"].as<int>()>0)
+    {
+      analogWrite(GPIO_RELAY2, power); // on
+      ticker_off.once(jsonSettings["DurationB"].as<int>(), stop);
+    }
+  } else if(state_led&4)
+  {
+    state_led &= ~(4);
+    if(jsonSettings["DurationC"].as<int>()>0)
+    {
+      analogWrite(GPIO_RELAY3, power); // on
+      ticker_off.once(jsonSettings["DurationC"].as<int>(), stop);
+    }
+  } else {
+      state_led =0;
+      ticker_off.once(jsonSettings["Duration"].as<int>(), stop);      
+  }
+  strLog += String(hour()) + ":" + String(minute()) + " Starting " + state_led + "\n";
 }
 
 void stop()
 {
-  strLog += String(hour()) + ":" + String(minute()) + " Stop Fan\n";
-  digitalWrite(GPIO_RELAY, 0); // off
-  state_led = 0;
+  strLog += String(hour()) + ":" + String(minute()) + " Stop " + state_led +"\n";
+  analogWrite(GPIO_RELAY, 0); // off
+  analogWrite(GPIO_RELAY2, 0); // off
+  analogWrite(GPIO_RELAY3, 0); // off
+  if(state_led!=0)
+  {
+    start();
+  }
 }
 
 int getState()
@@ -524,9 +543,10 @@ void handle_esp_charging() {
 
 void tick_read() {
   jsonData["ADC"]  = analogRead(A0);
+  
+  float tempC= sht15.readTemperatureC();
+  float humidity = sht15.readHumidity();
 
-  float tempC = jsonData["Temperature"] = sht15.readTemperatureC();
-  float humidity = jsonData["Humidity"] = sht15.readHumidity();
 
   Serial.println(millis());
   Serial.print(" Temp = ");
@@ -536,34 +556,33 @@ void tick_read() {
   Serial.print(humidity);
   Serial.println("%");
 
-  int clean_hour = jsonSettings["cleanTime"];
-  float settings_thresh = jsonSettings["Threshold"];
-  if (getState() == 0)
+  if(humidity>100 || humidity<=0 || tempC<-100 || tempC>200)
   {
+    jsonData["Temperature"]  = "";
+    jsonData["Humidity"] = "";
+  } else{
+    jsonData["Temperature"]  = tempC;
+    jsonData["Humidity"] = humidity;    
+  }
+    int clean_hour = jsonSettings["cleanTime"];
+    float settings_thresh = jsonSettings["Threshold"];
     int clean_daily_mask = jsonSettings["cleanDays"];
     if ((1 << ((weekday() - 2) % 7)) & clean_daily_mask)
     {
       if (hour() == clean_hour)
       {
-        if (humidity > settings_thresh &&  state_led == 0)
+        if ((humidity > settings_thresh || settings_thresh == -1) &&  started_by_timer == 0)
         {
           strLog += "Humidity= " + String(humidity) + "\n";
+          started_by_timer = 1;
+          state_led |= 7;
           start();
-          state_led = 1;
         }
       }
     }
-  }
-        if (humidity < settings_thresh*0.7 && getState())
-        {
-          strLog += "Humidity= " + String(humidity) + "\n";
-          stop();
-        }
 
-  if (hour() != clean_hour)
-  {
-    state_led = 0;
-  }
+    if (hour() != clean_hour)
+      started_by_timer = 0;
 }
 
 
@@ -586,9 +605,9 @@ void handle_api2()
   handle_settings();
   updateData();
   String data;
-  jsonData.printTo(data);
+  serializeJson(jsonBufferData, data);
   String settings;
-  jsonSettings.printTo(settings);
+  serializeJson(jsonBufferSettings, settings);
   server.send(200, "text/plain", "{\n\"Data\":" + data + ",\n\"Settings\":" + settings + "\n}");
 }
 
@@ -601,9 +620,11 @@ void handle_settings()
 
   if (action == "clean" && value == "stop")
   {
+    state_led = 0;
     stop();
-  } else if (action == "clean" && value == "start")
+  } else if (action == "clean")
   {
+    state_led |=value.toInt(); 
     start();
   } else if (action == "dock" && value == "home")
   {
@@ -642,24 +663,6 @@ void handle_settings()
         changed = true;
       }
     }
-
-    /*
-      if(action == "cleanTime")
-      {
-      jsonSettings["cleanTime"] = value.toInt();
-      changed = true;
-      }
-      if(server.hasArg("thresh"))
-      {
-      jsonSettings["Threshold"] = server.arg("thresh").toFloat();
-      changed = true;
-      }
-      if(server.hasArg("duration"))
-      {
-      jsonSettings["Duration"] = server.arg("duration").toInt();
-      changed = true;
-      }
-    */
     if (changed)
     {
       saveConfig();
@@ -797,39 +800,41 @@ String query_ntp()
 
   sendNTPpacket(timeServerIP); // send an NTP packet to a time server
   // wait to see if a reply is available
-  delay(1000);
-
-  int cb = udp.parsePacket();
-  if (!cb) {
-    result += ("no packet yet\n");
-  }
-  else {
-    result += ("packet received, length=");
-    result += String(cb);
-    // We've received a packet, read the data from it
-    udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
-
-    //the timestamp starts at byte 40 of the received packet and is four bytes,
-    // or two words, long. First, esxtract the two words:
-
-    unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
-    unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
-    // combine the four bytes (two words) into a long integer
-    // this is NTP time (seconds since Jan 1 1900):
-    unsigned long secsSince1900 = highWord << 16 | lowWord;
-    result += ("\nSeconds since Jan 1 1900 = " );
-    result += String(secsSince1900);
-    if (secsSince1900 == 0) return result;
-    // now convert NTP time into everyday time:
-    result += ("\nUnix time = ");
-    // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
-    const unsigned long seventyYears = 2208988800UL;
-    // subtract seventy years:
-    unsigned long epoch = secsSince1900 - seventyYears;
-    // print Unix time:
-    result += String(epoch);
-    setTime(epoch);
-
+  for(int i=0;i++;i<5)
+  {
+    delay(200);
+    int cb = udp.parsePacket();
+    if (!cb) {
+      result += ("no packet yet\n");
+    }
+    else {
+      result += ("packet received, length=");
+      result += String(cb);
+      // We've received a packet, read the data from it
+      udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
+  
+      //the timestamp starts at byte 40 of the received packet and is four bytes,
+      // or two words, long. First, esxtract the two words:
+  
+      unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
+      unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
+      // combine the four bytes (two words) into a long integer
+      // this is NTP time (seconds since Jan 1 1900):
+      unsigned long secsSince1900 = highWord << 16 | lowWord;
+      result += ("\nSeconds since Jan 1 1900 = " );
+      result += String(secsSince1900);
+      if (secsSince1900 == 0) return result;
+      // now convert NTP time into everyday time:
+      result += ("\nUnix time = ");
+      // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
+      const unsigned long seventyYears = 2208988800UL;
+      // subtract seventy years:
+      unsigned long epoch = secsSince1900 - seventyYears;
+      // print Unix time:
+      result += String(epoch);
+      setTime(epoch);
+      return result;
+    }
   }
   // wait ten seconds before asking for the time again
   return result;
@@ -875,24 +880,19 @@ String formatBytes(size_t bytes) {
 }
 
 bool saveConfig() {
-  /*
-    StaticJsonBuffer<200> jsonBuffer;
-    JsonObject& json = jsonBuffer.createObject();
-    json["cleanTime"] = clean_hour;
-    json["cleanDays"] = clean_daily_mask;
-    json["cleanAuto"] = clean_auto_on;
-    json["thresh"] = settings_thresh;
-    json["duration"] = settings_duration;
-  */
+
   File configFile = SPIFFS.open("/config.json", "w");
   if (!configFile) {
     strLog += ("Failed to open config file for writing\n");
     return false;
   }
-  strLog += ("saved Settings\n");
 
-  jsonSettings.printTo(configFile);
+  // Serialize JSON to file
+  if (serializeJson(jsonBufferSettings, configFile) == 0) {
+    strLog +=("Failed to write to file");
+  }
   configFile.close();
+  strLog += ("saved Settings\n");
   return true;
 }
 
@@ -904,67 +904,15 @@ bool loadConfig() {
     return false;
   }
 
-  size_t size = configFile.size();
-  if (size > 1024) {
-    strLog += ("Config file size is too large\n");
+  DeserializationError error = deserializeJson(jsonBufferSettings, configFile);
+  if (error){
+    strLog += F("Failed to read file, using default configuration");
     return false;
   }
-
-  // Allocate a buffer to store contents of the file.
-  std::unique_ptr<char[]> buf(new char[size]);
-
-  // We don't use String here because ArduinoJson library requires the input
-  // buffer to be mutable. If you don't use ArduinoJson, you may as well
-  // use configFile.readString instead.
-  configFile.readBytes(buf.get(), size);
   configFile.close();
-
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& json = jsonBuffer.parseObject(buf.get());
-  if (!json.success()) {
-    strLog += ("Failed to parse config file\n");
-    return false;
-  }
-
-  for (JsonObject::iterator it = json.begin(); it != json.end(); ++it)
-  {
-    if (strlen(it->key) > 1)
-    {
-      if(it->value.is<float>())
-      {
-        jsonSettings.set(it->key, it->value.as<float>());
-      } else if(it->value.is<int>())
-      {
-        jsonSettings.set(it->key, it->value.as<int>());
-      }
-    }
-  }
-
   String tmp;
-  jsonSettings.printTo(tmp);
+  serializeJson(jsonBufferSettings, tmp);
   strLog +=  tmp;
-  /*
-    if(json.containsKey("cleanTime"))
-    {
-      clean_hour = json["cleanTime"];
-    }
-    if(json.containsKey("cleanDays"))
-    {
-      clean_daily_mask = json["cleanDays"];
-    }
-    if(json.containsKey("cleanAuto"))
-    {
-      auto_on = json["cleanAuto"];
-    }
-    if(json.containsKey("thresh"))
-    {
-      settings_thresh = json["thresh"];
-    }
-    if(json.containsKey("duration"))
-    {
-      settings_duration = json["duration"];
-    }
-  */
   return true;
 }
 
