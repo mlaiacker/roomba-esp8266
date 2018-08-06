@@ -12,6 +12,7 @@
 #include <FS.h>
 #include <Ticker.h>
 #include <WiFiUdp.h>
+#include <MQTT.h>
 
 #include <SHT1X.h>
 
@@ -31,7 +32,7 @@ unsigned int localPort = 5390;      // local port to listen for UDP packets
     Lookup the IP address for the host name instead */
 //IPAddress timeServer(129, 6, 15, 28); // time.nist.gov NTP server
 IPAddress timeServerIP; // time.nist.gov NTP server address
-const char* ntpServerName = "time.nist.gov";
+const char* ntpServerName = "2.de.pool.ntp.org";
 
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
 
@@ -62,6 +63,10 @@ String  BSlocal = "0";
 // WIFI
 String ssid    = "mlaiacker";
 String password = "83kdfiafo274DF";
+String mqttBroker = "192.168.1.38";
+String mqttUser = "max";
+String mqttPass = "hsr45nmla";
+
 //String ssid    = "FRITZ!Box 7430 FJ";
 //String password = "50782790526795774722";
 
@@ -72,8 +77,11 @@ ESP8266WebServer  server(80);
 MDNSResponder   mdns;
 WiFiClient client;
 
+MQTTClient mqttClient;
+
 int state_led = 0;
 int started_by_timer = 0;
+float sensor_min = 10.0; // for calculating the hole day heat integral
 
 StaticJsonDocument<500>  jsonBufferSettings;
 StaticJsonDocument<500> jsonBufferData;
@@ -104,7 +112,7 @@ String inputBodyPOST    =  "</span><input type='text' name='";
 String inputBodyClose   =  "' class='form-control' aria-describedby='basic-addon1'></div></div></div></div>";
 
 String roombacontrol    =  "<a href='roombastart'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-play' aria-hidden='true'></span> Start</button></a><a href='roombadock'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-home' aria-hidden='true'></span> Dock</button></a> <a href='roombastop'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-stop' aria-hidden='true'></span> Stop</button></a></div></div>";
-String linksCleanHour;//   =  "<a href='api?action=cleanHour&value=0'><button type='button' class='btn btn-default'>0</button></a> <a href='api?action=cleanHour&value=1'><button type='button' class='btn btn-default'>1</button></a> <a href='api?action=cleanHour&value=2'> <button type='button' class='btn btn-default'>2</button></a> <a href='api?action=cleanHour&value=3'><button type='button' class='btn btn-default'>3</button></a> </div></div>";
+//String linksCleanHour;//   =  "<a href='api?action=cleanHour&value=0'><button type='button' class='btn btn-default'>0</button></a> <a href='api?action=cleanHour&value=1'><button type='button' class='btn btn-default'>1</button></a> <a href='api?action=cleanHour&value=2'> <button type='button' class='btn btn-default'>2</button></a> <a href='api?action=cleanHour&value=3'><button type='button' class='btn btn-default'>3</button></a> </div></div>";
 String linksCleanDays   =  "<a href='api?action=cleanDays&value=1'><button type='button' class='btn btn-default'>M</button></a> <a href='api?action=cleanDays&value=2'><button type='button' class='btn btn-default'>T</button></a> <a href='api?action=cleanDays&value=4'><button type='button' class='btn btn-default'>W</button></a> <a href='api?action=cleanDays&value=8'><button type='button' class='btn btn-default'>T</button></a> <a href='api?action=cleanDays&value=16'><button type='button' class='btn btn-default'>F</button></a> <a href='api?action=cleanDays&value=32'><button type='button' class='btn btn-default'>S</button></a> <a href='api?action=cleanDays&value=64'><button type='button' class='btn btn-default'>S</button></a> </div></div>";
 
 // Setup
@@ -118,6 +126,10 @@ void setup(void)
   jsonSettings["Threshold"] = 0.0f;
   jsonSettings["cleanTime"] = 0;
   jsonSettings["cleanDays"] = 0;
+  jsonData["RunA"] = 0.0;
+  jsonData["RunB"] = 0.0;
+  jsonData["RunC"] = 0.0;
+  jsonData["Heat"] = 0.0;
 
   int FSTotal;
   int FSUsed;
@@ -305,11 +317,12 @@ void setup(void)
   server.begin();
   // Start up the library ds1820
   sensors.begin();
-  // get IP
-  //IPAddress ip = WiFi.localIP();
-  //ClientIP = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
-
   strLog += "HTTP server started\n";
+  // Note: Local domain names (e.g. "Computer.local" on OSX) are not supported by Arduino.
+  // You need to set the IP address directly.
+  mqttClient.begin(mqttBroker.c_str(), client);
+  mqttClient.setOptions(65,true,1500);
+  mqttClient.onMessage(mqttReceived);
 
   ticker_state_charge.attach(30, handle_esp_charging);
   ticker_state_dist.attach(60, tick_read);
@@ -319,13 +332,6 @@ void setup(void)
 
   tick_ntp();
   tick_read();
-  //  digitalWrite(GPIO_LED,1); // off
-
-  for (int i = 0; i < 24; i++)
-  {
-    linksCleanHour   +=  "<a href='api?action=cleanTime&value=" + String(i) + "'><button type='button' class='btn btn-default'>" + String(i) + "</button></a>\n";
-  }
-  linksCleanHour += "</div></div>";
 }
 
 void oneFindDev()
@@ -341,6 +347,7 @@ void oneFindDev()
     sensors.requestTemperatures();
     strLog += "temp=" + String(sensors.getTempC(oneAddr[i])) + "\n";
     i++;
+    yield();
   }
 
 }
@@ -356,16 +363,73 @@ String printAddress(DeviceAddress deviceAddress)
   return result;
 }
 
+void mqttConnect() {
+  if (WiFi.status() == WL_CONNECTED) {  
+    strLog += ("mqtt("+mqttBroker+")...");
+    Serial.print("mqtt("+mqttBroker+")...");
+    if(mqttClient.connect(espName.c_str(), mqttUser.c_str(), mqttPass.c_str()))
+    {
+      Serial.println("connected!");
+      strLog +="connected!\n";
+      mqttClient.subscribe(espName+"/cmd/PumpA");
+      delay(10);
+      mqttClient.subscribe(espName+"/cmd/PumpB");
+      delay(10);
+      mqttClient.subscribe(espName+"/cmd/PumpC");      
+      delay(10);
+      mqttClient.subscribe(espName+"/cmd/Start");
+      delay(10);
+      mqttClient.subscribe(espName+"/cmd/Stop");
+    } else 
+    {
+      mqttClient.disconnect();
+      delay(10);
+      strLog += "failed:"+ String(mqttClient.lastError())+"\n";
+      Serial.println("failed:"+ String(mqttClient.lastError()));
+    }
+  }
+}
+
+void mqttReceived(String &topic, String &payload) {
+  strLog +=("mqtt: " + topic + ": " + payload);
+  Serial.println("mqtt: " + topic + ": " + payload);
+  if(topic==(espName+"/cmd/PumpA"))
+  {
+    state_led=1;
+    start();
+  }
+  if(topic==(espName+"/cmd/PumpB"))
+  {
+    state_led=2;
+    start();
+  }
+  if(topic==(espName+"/cmd/PumpC"))
+  {
+    state_led=4;
+    start();
+  }
+  if(topic==(espName+"/cmd/Start"))
+  {
+    state_led=7;
+    start();
+  }
+}
 void updateData()
 {
+  float sensor = 0.0;
+  sensor_min = 100;
   sensors.requestTemperatures();
   for (int i = 0; i < 8; i++)
   {
     if (oneAddr[i][0] == 0x28)
     {
-      jsonData[printAddress(oneAddr[i])] = sensors.getTempC(oneAddr[i]);
+      sensor = sensors.getTempC(oneAddr[i]);
+      sensor_min = fmin(sensor, sensor_min);
+      jsonData[printAddress(oneAddr[i])] = sensor;
     }
   }
+  if(sensor_min==100) sensor_min = 10; // no data
+  
 //  jsonData["PumpA"] = getState();
 //  jsonData["PumpB"] = digitalRead(GPIO_RELAY2);
 //  jsonData["PumpC"] = digitalRead(GPIO_RELAY3);
@@ -400,7 +464,7 @@ void updateData()
     clean_days += String("S");
   } else clean_days += String("_");
   jsonData["Clean Days"] = clean_days;
-  jsonData["Clean Time"] = jsonSettings["cleanTime"].as<int>();
+//  jsonData["Clean Time"] = jsonSettings["cleanTime"].as<int>();
 }
 
 // ROOT page ##############
@@ -416,14 +480,10 @@ void handle_root()
 
   for (JsonObject::iterator it = jsonData.begin(); it != jsonData.end(); ++it)
   {
-    // *it contains the key/value pair
-    const char* key = it->key;
-
-    // it->value contains the JsonVariant which can be casted as usual
-    const char* value = it->value;
-
-    // this also works
-    StatusHTML += panelBodySymbol + String("info-sign") + panelBodyName + it->key + panelBodyValue + it->value.as<String>() + panelBodyEnd;
+    if(it->value.as<String>().length()>0)
+    {
+      StatusHTML += panelBodySymbol + String("info-sign") + panelBodyName + it->key + panelBodyValue + it->value.as<String>() + panelBodyEnd;
+    }
   }
 
   StatusHTML += panelBodySymbol + String("info-sign") + panelBodyName + String("Log") + "<pre>" +  strLog + "\n</pre>" + panelBodyEnd;
@@ -435,24 +495,18 @@ void handle_root()
   
   for (JsonObject::iterator it = jsonSettings.begin(); it != jsonSettings.end(); ++it)
   {
-    // *it contains the key/value pair
-    const char* key = it->key;
-    // it->value contains the JsonVariant which can be casted as usual
-    const char* value = it->value;
     commands += inputBodyStart + inputBodyName + " " + it->key + " " + inputBodyPOST + it->key + "' value='" + it->value.as<String>() + inputBodyClose + "</form>";
   }
   server.send ( 200, "text/html", header + navbar + containerStart + title1 + StatusHTML + panelEnd + title3 + commands + panelEnd + containerEnd + siteEnd);
 }
 
 
-bool handle_roomba_state()
-{
-}
-
 void loop(void)
 {
+  mqttClient.loop();
+
   server.handleClient();
-  if (strLog.length() > 300)
+  if (strLog.length() > 350)
   {
     strLog.remove(0, 1);
   }
@@ -469,8 +523,10 @@ void handle_roomba_start()
 
 void handle_roomba_dock()
 {
+  jsonData["RunA"] = 0.0;
+  jsonData["RunB"] = 0.0;
+  jsonData["RunC"] = 0.0;
   server.send(200, "text/plain", "GOGO Home");
-  //  handle_root();
 }
 
 void handle_roomba_stop()
@@ -482,13 +538,19 @@ void handle_roomba_stop()
 void start()
 {
   int power = jsonSettings["Power"].as<int>();
+  int adc  = analogRead(A0);
+  int index = 0;
+  jsonData["Fan"] = 1;
   if(state_led&1)
   {
     state_led &= ~(1);
     if(jsonSettings["DurationA"].as<int>()>0)
     {
       analogWrite(GPIO_RELAY, power); // on
+      index = 1;
       ticker_off.once(jsonSettings["DurationA"].as<int>(), stop);
+      jsonData["RunA"] = jsonData["RunA"].as<float>() + jsonSettings["DurationA"].as<int>()*power/1024.0;
+      mqttClient.publish(espName+"/event/PumpA");
     }
   } else if(state_led&2)
   {
@@ -496,7 +558,10 @@ void start()
     if(jsonSettings["DurationB"].as<int>()>0)
     {
       analogWrite(GPIO_RELAY2, power); // on
+      index = 2;
       ticker_off.once(jsonSettings["DurationB"].as<int>(), stop);
+      jsonData["RunB"] = jsonData["RunB"].as<float>() + jsonSettings["DurationB"].as<int>()*power/1024.0;
+      mqttClient.publish(espName+"/event/PumpB");
     }
   } else if(state_led&4)
   {
@@ -504,33 +569,33 @@ void start()
     if(jsonSettings["DurationC"].as<int>()>0)
     {
       analogWrite(GPIO_RELAY3, power); // on
+      index = 3;
       ticker_off.once(jsonSettings["DurationC"].as<int>(), stop);
+      jsonData["RunC"] = jsonData["RunC"].as<float>() + jsonSettings["DurationC"].as<int>()*power/1024.0;
+      mqttClient.publish(espName+"/event/PumpC");
     }
   } else {
       state_led =0;
+      jsonData["Fan"] = 0;
       ticker_off.once(jsonSettings["Duration"].as<int>(), stop);      
   }
-  strLog += String(hour()) + ":" + String(minute()) + " Starting " + state_led + "\n";
+  strLog += String(hour()) + ":" + String(minute()) + " Start:" + index + " adc:"+adc+"\n";
 }
 
 void stop()
 {
-  strLog += String(hour()) + ":" + String(minute()) + " Stop " + state_led +"\n";
+  int adc  = analogRead(A0);
+  jsonData["Fan"] = 0;
+  strLog += String(hour()) + ":" + String(minute()) + " Stop:" + state_led + " adc:"+adc+"\n";;
   analogWrite(GPIO_RELAY, 0); // off
   analogWrite(GPIO_RELAY2, 0); // off
   analogWrite(GPIO_RELAY3, 0); // off
+  mqttClient.publish(espName+"/event/Stop");
   if(state_led!=0)
   {
     start();
   }
 }
-
-int getState()
-{
-  return digitalRead(GPIO_RELAY);
-}
-
-
 
 void handle_esp_restart() {
   stop();
@@ -542,8 +607,8 @@ void handle_esp_charging() {
 }
 
 void tick_read() {
-  jsonData["ADC"]  = analogRead(A0);
-  
+  jsonData["ADC"]   = analogRead(A0);
+  jsonData["Heat"] = jsonData["Heat"].as<float>() + sensor_min/60.0/24.0; // mean temp (called every minute)
   float tempC= sht15.readTemperatureC();
   float humidity = sht15.readHumidity();
 
@@ -573,16 +638,36 @@ void tick_read() {
       {
         if ((humidity > settings_thresh || settings_thresh == -1) &&  started_by_timer == 0)
         {
-          strLog += "Humidity= " + String(humidity) + "\n";
+          strLog += "Humidity= " + String(humidity) + " Heat=" + jsonData["Heat"].as<String>() + "\n";
           started_by_timer = 1;
           state_led |= 7;
           start();
         }
+        jsonData["Heat"] = 0.0;
       }
     }
 
     if (hour() != clean_hour)
       started_by_timer = 0;
+
+  if (!mqttClient.connected()) {
+    mqttConnect();
+  }
+  if(mqttClient.connected())
+  {
+    for (JsonObject::iterator it = jsonData.begin(); it != jsonData.end(); ++it)
+    {
+      if(it->value.as<String>().length()>0)
+      {
+        mqttClient.publish(espName+"/data/"+it->key,it->value.as<String>(),true,0);
+        delay(10);
+      }
+    }
+    String str;
+    if (serializeJson(jsonBufferData, str) != 0) {
+      mqttClient.publish(espName+"/data/json",str,true,0);
+    }
+  }
 }
 
 
@@ -665,6 +750,7 @@ void handle_settings()
     }
     if (changed)
     {
+      yield();
       saveConfig();
     }
   }
@@ -800,7 +886,7 @@ String query_ntp()
 
   sendNTPpacket(timeServerIP); // send an NTP packet to a time server
   // wait to see if a reply is available
-  for(int i=0;i++;i<5)
+  for(int i=0;i<5;i++)
   {
     delay(200);
     int cb = udp.parsePacket();
@@ -808,8 +894,8 @@ String query_ntp()
       result += ("no packet yet\n");
     }
     else {
-      result += ("packet received, length=");
-      result += String(cb);
+//      result += ("packet received, length=");
+//      result += String(cb);
       // We've received a packet, read the data from it
       udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
   
@@ -821,8 +907,8 @@ String query_ntp()
       // combine the four bytes (two words) into a long integer
       // this is NTP time (seconds since Jan 1 1900):
       unsigned long secsSince1900 = highWord << 16 | lowWord;
-      result += ("\nSeconds since Jan 1 1900 = " );
-      result += String(secsSince1900);
+//      result += ("\nSeconds since Jan 1 1900 = " );
+//      result += String(secsSince1900);
       if (secsSince1900 == 0) return result;
       // now convert NTP time into everyday time:
       result += ("\nUnix time = ");
@@ -831,7 +917,7 @@ String query_ntp()
       // subtract seventy years:
       unsigned long epoch = secsSince1900 - seventyYears;
       // print Unix time:
-      result += String(epoch);
+      result += String(epoch) + "\n";
       setTime(epoch);
       return result;
     }
@@ -843,7 +929,7 @@ String query_ntp()
 // send an NTP request to the time server at the given address
 unsigned long sendNTPpacket(IPAddress& address)
 {
-  strLog += ("sending NTP packet...\n");
+  strLog += ("NTP...\n");
   // set all bytes in the buffer to 0
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
   // Initialize values needed to form NTP request
@@ -879,6 +965,25 @@ String formatBytes(size_t bytes) {
   }
 }
 
+void mqttSettingsPub()
+{
+  if(mqttClient.connected())
+  {
+    for (JsonObject::iterator it = jsonSettings.begin(); it != jsonSettings.end(); ++it)
+    {
+      if(it->value.as<String>().length()>0)
+      {
+        mqttClient.publish(espName+"/settings/"+it->key,it->value.as<String>(),true,0);
+        delay(10);
+      }
+    }
+    String str;
+    if (serializeJson(jsonBufferSettings, str) != 0) {
+      mqttClient.publish(espName+"/settings/json",str,true,0);
+    }
+  }
+}
+
 bool saveConfig() {
 
   File configFile = SPIFFS.open("/config.json", "w");
@@ -893,6 +998,7 @@ bool saveConfig() {
   }
   configFile.close();
   strLog += ("saved Settings\n");
+  mqttSettingsPub();
   return true;
 }
 
@@ -910,9 +1016,10 @@ bool loadConfig() {
     return false;
   }
   configFile.close();
-  String tmp;
-  serializeJson(jsonBufferSettings, tmp);
-  strLog +=  tmp;
+//  String tmp;
+//  serializeJson(jsonBufferSettings, tmp);
+//  strLog +=  tmp;
+  mqttSettingsPub();
   return true;
 }
 
