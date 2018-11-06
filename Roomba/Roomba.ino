@@ -1,14 +1,9 @@
-
 // Includes
-
 #include <Time.h>
 #include <TimeLib.h>
-#include <Base64_lib.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266WiFi.h>
-#include <WiFiClient.h>
 #include <ESP8266WebServer.h>
-//#include <EEPROM.h>
 #include <SoftwareSerial.h>
 
 #include <ArduinoJson.h>
@@ -20,18 +15,15 @@ Ticker ticker_state_charge;
 Ticker ticker_state_dist;
 
 Ticker ticker_ntp;
-#include <WiFiUdp.h>
 
-unsigned int localPort = 2391;      // local port to listen for UDP packets
+unsigned int localPort = 5783;      // local port to listen for UDP packets
 
 /* Don't hardwire the IP address or we won't get the benefits of the pool.
  *  Lookup the IP address for the host name instead */
 //IPAddress timeServer(129, 6, 15, 28); // time.nist.gov NTP server
 IPAddress timeServerIP; // time.nist.gov NTP server address
-const char* ntpServerName = "time.nist.gov";
-
+const char* ntpServerName = "2.de.pool.ntp.org";
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
-
 byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 
 // A UDP instance to let us send and receive packets over UDP
@@ -39,7 +31,7 @@ WiFiUDP udp;
 
 String strLog = "";
 
-String roombotVersion = "0.4.6";
+String roombotVersion = "1.5.0";
 String WMode = "1";
 
 #define SERIAL_RX     D5  // pin for SoftwareSerial RX
@@ -48,7 +40,6 @@ String WMode = "1";
 #define  GPIO_BUTTON     13
 
 SoftwareSerial mySerial(SERIAL_RX, SERIAL_TX); // (RX, TX. inverted, buffer)
-
 
 // Div
 File UploadFile;
@@ -81,10 +72,6 @@ ESP8266WebServer  server(80);
 MDNSResponder   mdns;
 WiFiClient client;
 
-// AP mode when WIFI not available
-//const char *APssid = "Roombot";
-//const char *APpassword = "thereisnospoon";
-
 String roomba_state1 = "?";
 String roomba_state_volt = "?";
 String roomba_state_current = "?";
@@ -102,6 +89,12 @@ int clean_auto_on = 1;
 int32_t clean_dist = 0;
 int clean_daily_mask = 0x1f; 
 int clean_hour = 12;
+
+StaticJsonDocument<500>  jsonBufferSettings;
+StaticJsonDocument<500> jsonBufferData;
+
+JsonObject& jsonSettings = jsonBufferSettings.to<JsonObject>();
+JsonObject& jsonData = jsonBufferData.to<JsonObject>();
 
 // HTML
 //String header       =  "<html lang='en'><head><title>Roombot control panel</title><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='stylesheet' href='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css'><script src='https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js'></script><script src='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js'></script></head><body>";
@@ -195,19 +188,20 @@ void handle_root()
 }
 
 bool saveConfig() {
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& json = jsonBuffer.createObject();
-  json["cleanTime"] = clean_hour;
-  json["cleanDays"] = clean_daily_mask;
-  json["cleanAuto"] = clean_auto_on;
+  jsonSettings["cleanTime"] = clean_hour;
+  jsonSettings["cleanDays"] = clean_daily_mask;
+  jsonSettings["cleanAuto"] = clean_auto_on;
 
   File configFile = SPIFFS.open("/config.json", "w");
   if (!configFile) {
     strLog+="Failed to open config file for writing\n";
     return false;
   }
-
-  json.printTo(configFile);
+  // Serialize JSON to file
+  if (serializeJson(jsonBufferSettings, configFile) == 0) {
+    strLog +=("Failed to write to file");
+  }
+  configFile.close();
   return true;
 }
 
@@ -219,39 +213,24 @@ bool loadConfig() {
     return false;
   }
 
-  size_t size = configFile.size();
-  if (size > 1024) {
-    strLog+="Config file size is too large\n";
+  DeserializationError error = deserializeJson(jsonBufferSettings, configFile);
+  if (error){
+    strLog += F("Failed to read file, using default configuration");
     return false;
   }
+  configFile.close();
 
-  // Allocate a buffer to store contents of the file.
-  std::unique_ptr<char[]> buf(new char[size]);
-
-  // We don't use String here because ArduinoJson library requires the input
-  // buffer to be mutable. If you don't use ArduinoJson, you may as well
-  // use configFile.readString instead.
-  configFile.readBytes(buf.get(), size);
-
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& json = jsonBuffer.parseObject(buf.get());
-
-  if (!json.success()) {
-    strLog+="Failed to parse config file\n";
-    return false;
-  }
-
-  if(json.containsKey("cleanTime"))
+  if(jsonSettings.containsKey("cleanTime"))
   {
-    clean_hour = json["cleanTime"];
+    clean_hour = jsonSettings["cleanTime"];
   }
-  if(json.containsKey("cleanDays"))
+  if(jsonSettings.containsKey("cleanDays"))
   {
-    clean_daily_mask = json["cleanDays"];
+    clean_daily_mask = jsonSettings["cleanDays"];
   }
-  if(json.containsKey("cleanAuto"))
+  if(jsonSettings.containsKey("cleanAuto"))
   {
-    clean_auto_on = json["cleanAuto"];
+    clean_auto_on = jsonSettings["cleanAuto"];
   }
 
   return true;
@@ -611,7 +590,7 @@ void handle_soft_serial()
 int button_counter;
 void loop(void)
 {
-  if (strLog.length() > 300)
+  if (strLog.length() > 500)
   {
     strLog.remove(0, 1);
   }
@@ -944,7 +923,7 @@ String query_ntp()
 }
 
 // send an NTP request to the time server at the given address
-unsigned long sendNTPpacket(IPAddress& address)
+void sendNTPpacket(IPAddress& address)
 {
   strLog+="sending NTP packet...";
   // set all bytes in the buffer to 0
