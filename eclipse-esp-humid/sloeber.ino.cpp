@@ -2,7 +2,7 @@
 //This is a automatic generated file
 //Please do not modify this file
 //If you touch this file your change will be overwritten during the next build
-//This file has been generated on 2018-08-06 21:44:02
+//This file has been generated on 2019-02-03 02:01:45
 
 #include "Arduino.h"
 #include <Time.h>
@@ -48,7 +48,7 @@ void handleFormat() ;
 void handle_filemanager_ajax() ;
 void tick_ntp() ;
 String query_ntp() ;
-unsigned long sendNTPpacket(IPAddress& address) ;
+void sendNTPpacket(IPAddress& address) ;
 String formatBytes(size_t bytes) ;
 void mqttJsonPub(JsonObject &json, String name) ;
 bool saveConfig() ;

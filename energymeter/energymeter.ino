@@ -1,7 +1,6 @@
 // Includes
 #include <Time.h>
 #include <TimeLib.h>
-#include <Base64_lib.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
@@ -866,5 +865,3 @@ String formatBytes(size_t bytes) {
     return String(bytes / 1024.0 / 1024.0 / 1024.0) + "GB";
   }
 }
-
-

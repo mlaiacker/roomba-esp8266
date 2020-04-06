@@ -77,11 +77,11 @@ int started_by_timer = 0;
 float sensor_min = 10.0; // for calculating the hole day heat integral
 int heat_count = 0;
 int heat_sum = 0;
-StaticJsonDocument<500>  jsonBufferSettings;
-StaticJsonDocument<500> jsonBufferData;
+StaticJsonBuffer<500>  jsonBufferSettings;
+StaticJsonBuffer<500> jsonBufferData;
 
-JsonObject& jsonSettings = jsonBufferSettings.to<JsonObject>();
-JsonObject& jsonData = jsonBufferData.to<JsonObject>();
+JsonObject& jsonSettings = jsonBufferSettings.createObject();
+JsonObject& jsonData = jsonBufferData.createObject();
 
 // HTML
 String header       =  "<html lang='en'><head><title>" + espName + " control panel</title><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='stylesheet' href='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css'><script src='https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js'></script><script src='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js'></script></head><body>";
@@ -370,7 +370,7 @@ float getEvaporRate(float T)
 
 void mqttConnect() {
   if (WiFi.status() == WL_CONNECTED && !mqttClient.connected()) {
-    strLog += ("mqtt("+mqttBroker+")...");
+//    strLog += ("mqtt("+mqttBroker+")...");
     Serial.print("mqtt("+mqttBroker+")...");
     int n = 0;
     while(!mqttClient.connect(espName.c_str(), mqttUser.c_str(), mqttPass.c_str()) && n<3)
@@ -396,11 +396,10 @@ void mqttConnect() {
       mqttClient.subscribe(espName+"/cmd/Stop",1);
     } else
     {
-      strLog += "failed:"+ String(mqttClient.lastError())+"\n";
+//      strLog += "failed:"+ String(mqttClient.lastError())+"\n";
       if(mqttClient.lastError()==LWMQTT_NETWORK_FAILED_WRITE)
       {
-    	  client.clearWriteError();
-    	  client.stop();
+    	  mqttClient.disconnect();
     	  mqttClient.begin(mqttBroker.c_str(), client);
 
       }
@@ -528,7 +527,7 @@ void loop(void)
 {
   mqttClient.loop();
   server.handleClient();
-  if (strLog.length() > 350)
+  if (strLog.length() > 380)
   {
     strLog.remove(0, 1);
   }
@@ -565,6 +564,7 @@ void start()
   int index = 0;
   jsonData["Fan"] = 1;
   float rate = jsonData["Rate"].as<float>();
+  float runtime = 0;
   if(state_led&1)
   {
     state_led &= ~(1);
@@ -572,8 +572,9 @@ void start()
     {
       analogWrite(GPIO_RELAY, power); // on
       index = 1;
-      ticker_off.once(jsonSettings["DurationA"].as<int>()*rate, stop);
-      jsonData["RunA"] = jsonData["RunA"].as<float>() + jsonSettings["DurationA"].as<int>()*power*rate/1024.0;
+      runtime = jsonSettings["DurationA"].as<int>()*rate;
+      ticker_off.once(runtime, stop);
+      jsonData["RunA"] = jsonData["RunA"].as<float>() + runtime*power/1024.0;
       mqttClient.publish(espName+"/event/PumpA");
     }
   } else if(state_led&2)
@@ -583,8 +584,9 @@ void start()
     {
       analogWrite(GPIO_RELAY2, power); // on
       index = 2;
-      ticker_off.once(jsonSettings["DurationB"].as<int>()*rate, stop);
-      jsonData["RunB"] = jsonData["RunB"].as<float>() + jsonSettings["DurationB"].as<int>()*power*rate/1024.0;
+      runtime=jsonSettings["DurationB"].as<int>()*rate;
+      ticker_off.once(runtime, stop);
+      jsonData["RunB"] = jsonData["RunB"].as<float>() + runtime*power/1024.0;
       mqttClient.publish(espName+"/event/PumpB");
     }
   } else if(state_led&4)
@@ -594,16 +596,18 @@ void start()
     {
       analogWrite(GPIO_RELAY3, power); // on
       index = 3;
-      ticker_off.once(jsonSettings["DurationC"].as<int>()*rate, stop);
-      jsonData["RunC"] = jsonData["RunC"].as<float>() + jsonSettings["DurationC"].as<int>()*power*rate/1024.0;
+      runtime=jsonSettings["DurationC"].as<int>()*rate;
+      ticker_off.once(runtime, stop);
+      jsonData["RunC"] = jsonData["RunC"].as<float>() + runtime*power/1024.0;
       mqttClient.publish(espName+"/event/PumpC");
     }
   } else {
       state_led =0;
       jsonData["Fan"] = 0;
+      runtime=jsonSettings["Duration"].as<int>()*rate;
       ticker_off.once(jsonSettings["Duration"].as<int>()*rate, stop);
   }
-  strLog += String(hour()) + ":" + String(minute())+ ":" + String(second()) + " Start:" + index + " adc:"+adc+"\n";
+  strLog += String(hour()) + ":" + String(minute())+ ":" + String(second()) + " Start:" + index +" adc:"+adc+" for "+runtime+"s\n";
   mqttJsonPub(jsonData, "data");
 }
 
@@ -708,9 +712,9 @@ void handle_api2()
   handle_settings();
   updateData();
   String data;
-  serializeJson(jsonBufferData, data);
+  jsonData.printTo(data);
   String settings;
-  serializeJson(jsonBufferSettings, settings);
+  jsonSettings.printTo(settings);
   server.send(200, "text/plain", "{\n\"Data\":" + data + ",\n\"Settings\":" + settings + "\n}");
 }
 
@@ -945,7 +949,7 @@ String query_ntp()
 }
 
 // send an NTP request to the time server at the given address
-unsigned long sendNTPpacket(IPAddress& address)
+void sendNTPpacket(IPAddress& address)
 {
   strLog += ("NTP...\n");
   // set all bytes in the buffer to 0
@@ -996,12 +1000,12 @@ void mqttJsonPub(JsonObject &json, String name)
       }
     }
     String str;
-    if (serializeJson(json, str) != 0) {
+    if (json.printTo(str) != 0) {
       mqttClient.publish(espName+"/"+name+"/json",str,true,0);
     }
   }
 }
-
+//{"Duration":10,"DurationA":40,"DurationB":60,"DurationC":70,"Power":400,"Threshold":-1,"cleanTime":18,"cleanDays":127}
 bool saveConfig() {
 
   File configFile = SPIFFS.open("/config.json", "w");
@@ -1011,7 +1015,7 @@ bool saveConfig() {
   }
 
   // Serialize JSON to file
-  if (serializeJson(jsonBufferSettings, configFile) == 0) {
+  if (jsonSettings.printTo(configFile) == 0) {
     strLog +=("Failed to write to file");
   }
   configFile.close();
@@ -1027,13 +1031,17 @@ bool loadConfig() {
     saveConfig();
     return false;
   }
-
-  DeserializationError error = deserializeJson(jsonBufferSettings, configFile);
-  if (error){
-    strLog += F("Failed to read file, using default configuration");
+  StaticJsonBuffer<512> jsonBuffer;
+  JsonObject &json = jsonBuffer.parseObject(configFile);
+  configFile.close();
+  if (!jsonSettings.success()){
+    strLog += F("Failed to read file, using default configuration\n");
     return false;
   }
-  configFile.close();
+  for (auto kv : json) {
+	  strLog += (String(kv.key) + "="+ String(kv.value.as<float>()))+"\n";
+      jsonSettings.set(kv.key, kv.value.as<float>());
+  }
 //  String tmp;
 //  serializeJson(jsonBufferSettings, tmp);
 //  strLog +=  tmp;
