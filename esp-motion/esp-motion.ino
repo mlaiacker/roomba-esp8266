@@ -270,7 +270,7 @@ void setup(void)
 
   server.begin();
   strLog += "HTTP server started\n";
-  wifi_set_sleep_type(LIGHT_SLEEP_T);
+//  wifi_set_sleep_type(LIGHT_SLEEP_T);
   digitalWrite(2, 1); 
 }
 
@@ -355,7 +355,6 @@ void loop(void)
   {
     strLog.remove(0, 1);
   }
-  delay(100);
 }
 
 void updateData()
