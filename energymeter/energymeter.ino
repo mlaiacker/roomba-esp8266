@@ -53,8 +53,8 @@ int FSUsed;
 
 
 // WIFI
-String ssid    = "mlaiacker";
-String password = "83kdfiafo274DF";
+String ssid    = "";
+String password = "";
 String espName    = "esp-meter";
 
 // webserver

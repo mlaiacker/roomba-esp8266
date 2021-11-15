@@ -1,17 +1,21 @@
 // Includes
 #include <Time.h>
+#include <TimeLib.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
+//#include <EEPROM.h>
 #include <SoftwareSerial.h>
+#include "Base64.h"
 #include <FS.h>
 
-String roombotVersion = "0.3.6";
+String roombotVersion = "0.3.8";
 String WMode = "1";
 
 #define SERIAL_RX     D5  // pin for SoftwareSerial RX
 #define SERIAL_TX     D6  // pin for SoftwareSerial TX
+#define Wake_Pin      D1
 SoftwareSerial mySerial(SERIAL_RX, SERIAL_TX); // (RX, TX. inverted, buffer)
 
 
@@ -37,7 +41,7 @@ String formatBytes(size_t bytes) {
 }
 
 // WIFI
-String ssid    = "ssid";
+String ssid    = "your ssid";
 String password = "password";
 String espName    = "Roombot";
 
@@ -89,7 +93,7 @@ String inputBodyStart   =  "<form action='' method='POST'><div class='panel pane
 String inputBodyName    =  "<div class='form-group'><div class='input-group'><span class='input-group-addon' id='basic-addon1'>";
 String inputBodyPOST    =  "</span><input type='text' name='";
 String inputBodyClose   =  "' class='form-control' aria-describedby='basic-addon1'></div></div>";
-String roombacontrol     =  "<a href='/roombastart'<button type='button' class='btn btn-default'><span class='glyphicon glyphicon-play' aria-hidden='true'></span> Start</button></a><a href='/roombadock'<button type='button' class='btn btn-default'><span class='glyphicon glyphicon-home' aria-hidden='true'></span> Dock</button></a></div>";
+String roombacontrol     =  "<a href='/roombastart'<button type='button' class='btn btn-default'><span class='glyphicon glyphicon-play' aria-hidden='true'></span> Start</button></a><a href='/roombamax'<button type='button' class='btn btn-default'><span class='glyphicon glyphicon-play' aria-hidden='true'></span> Max Clean</button></a><a href='/roombastop'<button type='button' class='btn btn-default'><span class='glyphicon glyphicon-stop' aria-hidden='true'></span> Stop</button></a><a href='/roombaspot'<button type='button' class='btn btn-default'><span class='glyphicon glyphicon-cleaning' aria-hidden='true'></span> Spot</button></a><a href='/roombadock'<button type='button' class='btn btn-default'><span class='glyphicon glyphicon-home' aria-hidden='true'></span> Dock</button></a></div>";
 
 
 // ROOT page
@@ -128,6 +132,9 @@ void setup(void)
   mySerial.begin(115200);
   pinMode(SERIAL_RX, INPUT);
   pinMode(SERIAL_TX, OUTPUT);
+  pinMode(Wake_Pin, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(Wake_Pin,LOW);
   // Check if SPIFFS is OK
   if (!SPIFFS.begin())
   {
@@ -200,6 +207,9 @@ void setup(void)
   server.on("/filemanager_ajax", handle_filemanager_ajax);
   server.on("/delete", handleFileDelete);
   server.on("/roombastart", handle_roomba_start);
+  server.on("/roombamax", handle_roomba_max);
+  server.on("/roombastop", handle_roomba_stop);
+  server.on("/roombaspot", handle_roomba_spot);
   server.on("/roombadock", handle_roomba_dock);
   server.on("/restart", handle_esp_restart);
 
@@ -517,8 +527,18 @@ void handle_filemanager_ajax()
   }
 }
 
+void handle_roomba_wake(){
+  digitalWrite(Wake_Pin, HIGH);
+  delay(100);
+  digitalWrite(Wake_Pin, LOW);
+  delay(500);
+  digitalWrite(Wake_Pin, HIGH);
+  delay(100);
+ }
+
 void handle_roomba_start()
 {
+  handle_roomba_wake();
   Serial.println("Starting");
   mySerial.write(128);
   delay(50);
@@ -529,8 +549,46 @@ void handle_roomba_start()
   handle_root();
 }
 
+void handle_roomba_max()
+{
+  handle_roomba_wake();
+  Serial.println("Starting");
+  mySerial.write(128);
+  delay(50);
+  mySerial.write(131);
+  delay(50);
+  mySerial.write(136);
+  Serial.println("Maximum cleaning");
+  handle_root();
+}
+
+void handle_roomba_spot()
+{
+  handle_roomba_wake();
+  mySerial.write(128);
+  delay(50);
+  mySerial.write(131);
+  delay(50);
+  mySerial.write(134);
+  Serial.println("Spot cleaning");
+  handle_root();
+}
+
+void handle_roomba_stop()
+{
+  handle_roomba_wake();
+  mySerial.write(128);
+  delay(50);
+  mySerial.write(131);
+  delay(50);
+  mySerial.write(133);
+  Serial.println("STOP");
+  handle_root();
+}
+
 void handle_roomba_dock()
 {
+  handle_roomba_wake();
   mySerial.write(128);
   delay(50);
   mySerial.write(131);
@@ -545,3 +603,114 @@ void handle_esp_restart() {
   ESP.restart();
 }
 
+void handle_esp_charging() {
+  int charge = 0;
+ // int data;
+  mySerial.write(142);
+  delay(50);
+  mySerial.write(21);
+  delay(50);
+  if (mySerial.available()) {
+    charge = Serial.read();
+    Serial.println("..");
+    Serial.print(charge);
+    switch (charge) {
+    case 0:{
+      //do something when var equals 1
+            String data = String(charge);
+     handle_esp_pimatic(data, chargevar);
+      break;}
+    case 1:{
+      //do something when var equals 2
+            String data = String(charge);
+        handle_esp_pimatic(data, chargevar);
+      break;}
+      case 2:{
+      //do something when var equals 2
+            String data = String(charge);
+        handle_esp_pimatic(data, chargevar);
+      break;}
+      case 3:{
+      //do something when var equals 2
+            String data = String(charge);
+      handle_esp_pimatic(data, chargevar);
+      break;}
+      case 4:{
+      //do something when var equals 2
+            String data = String(charge);
+       handle_esp_pimatic(data, chargevar);
+      break;}
+      case 5:{
+      //do something when var equals 2
+
+            String data = String(charge);
+            String variable = String(charge);
+      handle_esp_pimatic(data, chargevar);
+
+      break;}
+    default:
+      // if nothing else matches, do the default
+      // default is optional
+    break;
+  }
+  }
+  Serial.println("Charging status");
+}
+
+void handle_esp_distance() {
+
+  mySerial.write(142);
+  delay(50);
+  mySerial.write(19);
+  delay(50);
+  if (mySerial.available()) {
+    Serial.println("..");
+    Serial.print(Serial.read());
+  }
+  String data = String(Serial.read());
+  Serial.println("Distance traveled");
+  handle_esp_pimatic(data, distancevar);
+}
+
+void handle_esp_pimatic(String data, String variable) {
+String yourdata;
+  char uname[BASE64_LEN];
+  String str = String(Username) + ":" + String(Password);
+  str.toCharArray(uname, BASE64_LEN);
+  memset(unameenc, 0, sizeof(unameenc));
+ // base64_encode(unameenc, uname, strlen(uname));
+base64 encoder;
+  String auth = Username;
+  auth += ":";
+  auth += Password;
+
+  if (!client.connect(host.c_str(), httpPort))
+  {
+    Serial.println("connection failed");
+    return;
+  }
+
+  yourdata = "{\"type\": \"value\", \"valueOrExpression\": \"" + data + "\"}";
+
+  client.print("PATCH /api/variables/");
+  client.print(variable);
+  client.print(" HTTP/1.1\r\n");
+  client.print("Authorization: Basic ");
+  client.print(unameenc);
+  client.print("\r\n");
+  client.print("Host: " + host +"\r\n");
+  client.print("Content-Type:application/json\r\n");
+  client.print("Content-Length: ");
+  client.print(yourdata.length());
+  client.print("\r\n\r\n");
+  client.print(yourdata);
+
+
+  delay(500);
+
+  // Read all the lines of the reply from server and print them to Serial
+  while (client.available()) {
+    String line = client.readStringUntil('\r');
+    //Serial.print(line);
+  }
+}

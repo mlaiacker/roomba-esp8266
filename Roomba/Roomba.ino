@@ -50,8 +50,8 @@ String formatBytes(size_t bytes) {
 }
 
 // WIFI
-String ssid    = "mlaiacker";
-String password = "83kdfiafo274DF";
+String ssid    = "roombot";
+String password = "12345678";
 String espName    = "Roombot";
 
 // webserver
