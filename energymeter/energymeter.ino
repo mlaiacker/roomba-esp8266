@@ -11,27 +11,10 @@
 
 #include <FS.h>
 #include <Ticker.h>
-#include <WiFiUdp.h>
 
-unsigned int localPort = 2382;      // local port to listen for UDP packets
-/* Don't hardwire the IP address or we won't get the benefits of the pool.
- *  Lookup the IP address for the host name instead */
-//IPAddress timeServer(129, 6, 15, 28); // time.nist.gov NTP server
-IPAddress timeServerIP; // time.nist.gov NTP server address
-const char* ntpServerName = "time.nist.gov";
 Ticker ticker_ntp;
-const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
-byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 
-// A UDP instance to let us send and receive packets over UDP
-WiFiUDP udp;
-
-String roombotVersion = "0.4.8";
-String WMode = "1";
-
-//#define SERIAL_RX     D5  // pin for SoftwareSerial RX
-//#define SERIAL_TX     D6  // pin for SoftwareSerial TX
-//#define  GPIO_LED     16
+String roombotVersion = __FILE__" at "__DATE__;
 
 #define GPIO_SCK    14
 #define GPIO_DATA   12
@@ -46,15 +29,13 @@ String WMode = "1";
 // Div
 File UploadFile;
 String fileName;
-String  BSlocal = "0";
 String strLog="";
 int FSTotal;
 int FSUsed;
 
 
 // WIFI
-String ssid    = "";
-String password = "";
+#include "wlan_settings.h"
 String espName    = "esp-meter";
 
 // webserver
@@ -62,16 +43,12 @@ ESP8266WebServer  server(80);
 MDNSResponder   mdns;
 WiFiClient client;
 
-// Pimatic settings
-String ClientIP;
-
 long state_rssi;
 int state_adc;
 Ticker ticker_adc;
 
 uint8_t ledDigit[8];
 uint8_t ledPoint[8];
-int serial_state = 0;
 
 float button_dtime = 0;
 int button_time=0;
@@ -84,9 +61,7 @@ int powerSum = 0;
 int energy = 0; 
 int button_count = 0;
 String stateDisplay = "";
-
-#define BASE64_LEN 40
-char unameenc[BASE64_LEN];
+String statePower = "";
 
 // HTML
 //String header       =  "<html lang='en'><head><title>Roombot control panel</title><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'><link rel='stylesheet' href='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css'><script src='https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js'></script><script src='//maxcdn.bootstrapcdn.com/bootstrap/3.3.4/js/bootstrap.min.js'></script></head><body>";
@@ -109,7 +84,7 @@ String panelBodyEnd     =  "</span></div></div>";
 String inputBodyStart   =  "<form action='/api' method='POST'><div class='panel panel-default'><div class='panel-body'>";
 String inputBodyName    =  "<div class='form-group'><div class='input-group'><span class='input-group-addon' id='basic-addon1'>";
 String inputBodyPOST    =  "</span><input type='text' name='";
-String inputBodyClose   =  "' class='form-control' aria-describedby='basic-addon1'></div></div>";
+String inputBodyClose   =  "' class='form-control' aria-describedby='basic-addon1'></div></div></div></div>";
 String roombacontrol    =  "<a href='roombastart'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-play' aria-hidden='true'></span> Start</button></a><a href='roombadock'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-home' aria-hidden='true'></span> Dock</button></a> <a href='roombastop'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-stop' aria-hidden='true'></span> Stop</button></a></div></div>";
 
 
@@ -118,11 +93,12 @@ void handle_root()
 {
    
   String title1     = panelHeaderName + String("esp-meter Settings") + panelHeaderEnd;
-  String IPAddClient    = panelBodySymbol + String("globe") + panelBodyName + String("IP Address") + panelBodyValue + ClientIP + String(" ") + state_rssi + String("dBm") + panelBodyEnd;
+  String IPAddClient    = panelBodySymbol + String("globe") + panelBodyName + String("build Date") + panelBodyValue + roombotVersion + String(" ") + panelBodyEnd;
 
   String Uptime     = panelBodySymbol + String("time") + panelBodyName + String("Time UTC") + panelBodyValue + day() + String(".") + month() + String(".") + year() + String("   ") + hour() + String(":") + minute() + String(":") + second() + String(" ") + panelBodyEnd;
 
   String Status6     = panelBodySymbol + String("info-sign") + panelBodyName + String("ADC") + panelBodyValue + state_adc + panelBodyEnd;
+  Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("RSSI") + panelBodyValue + state_rssi + String("dBm ") + panelBodyEnd;
   Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Counts") + panelBodyValue + button_count + panelBodyEnd;
   Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("dt") + panelBodyValue + button_dtime + String("s ")+ panelBodyEnd;
   Status6 += panelBodySymbol + String("info-sign") + panelBodyName + String("Event") + panelBodyValue + button_time + String("s") + panelBodyEnd;
@@ -132,14 +108,14 @@ void handle_root()
 
   String title3 = panelHeaderName + String("Commands") + panelHeaderEnd;
   String commands = panelBodySymbol +                 panelBodyName +                        panelcenter + roombacontrol +  panelBodyEnd;
-         commands+= inputBodyStart + inputBodyName + " Display " + inputBodyPOST + "display' value='" + stateDisplay + inputBodyClose + "</form>";
+  commands+= inputBodyStart + inputBodyName + " Display " + inputBodyPOST + "display' value='" + stateDisplay + inputBodyClose + "</form>";
+  commands+= inputBodyStart + inputBodyName + " Power " + inputBodyPOST + "power' value='" + statePower + inputBodyClose + "</form>";
 
   server.send ( 200, "text/html", header + navbar + containerStart + title1 + IPAddClient + Uptime + Status6 + panelEnd + title3 + commands + panelEnd + containerEnd + siteEnd);
 }
 
 bool saveConfig() {
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& json = jsonBuffer.createObject();
+  DynamicJsonDocument json(1024);
   json["counts"] = button_count;
 
   strLog+= "t:"+String(now())+"json save count"+button_count+"\n";
@@ -149,7 +125,7 @@ bool saveConfig() {
     return false;
   }
 
-  json.printTo(configFile);
+  serializeJson(json, configFile);
   return true;
 }
 
@@ -167,21 +143,9 @@ bool loadConfig() {
     return false;
   }
 
-  // Allocate a buffer to store contents of the file.
-  std::unique_ptr<char[]> buf(new char[size]);
+  DynamicJsonDocument json(1024);
 
-  // We don't use String here because ArduinoJson library requires the input
-  // buffer to be mutable. If you don't use ArduinoJson, you may as well
-  // use configFile.readString instead.
-  configFile.readBytes(buf.get(), size);
-
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& json = jsonBuffer.parseObject(buf.get());
-
-  if (!json.success()) {
-    strLog+=("Failed to parse config file\n");
-    return false;
-  }
+  DeserializationError error = deserializeJson(json, configFile);
 
   if(json.containsKey("counts"))
   {
@@ -223,7 +187,7 @@ void setup(void)
 
   loadConfig();
   
-  WiFi.begin(ssid.c_str(), password.c_str());
+  WiFi.begin(SSID, PSK);
   int i = 0;
   while (WiFi.status() != WL_CONNECTED && i < 31)
   {
@@ -240,14 +204,14 @@ void setup(void)
   {
     strLog+=("\n");
     strLog+=("Connected to ");
-    strLog+=(ssid);
+    strLog+=(SSID);
     strLog+=("\nIP address: ");
-    strLog+=(WiFi.localIP());
+    strLog+=(WiFi.localIP().toString());
     strLog+=("\nHostname: ");
     strLog+=(espName+"\n");
 
   }
-
+  configTime(0, 0, WiFi.gatewayIP().toString().c_str());
   server.on("/format", handleFormat );
   server.on("/", handle_root);
   server.on("/index.html", handle_root);
@@ -365,14 +329,9 @@ void setup(void)
     }
   }
   server.begin();
-    // get IP
-  IPAddress ip = WiFi.localIP();
-  ClientIP = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
 
   Serial.println("HTTP server started");
   ticker_ntp.attach(36000, tick_ntp);
-  Serial.println("Starting UDP");
-  udp.begin(localPort);
 
   ticker_adc.attach(10, periodic_adc);
 
@@ -481,8 +440,7 @@ void loop(void)
       ledPoint[0] = 0;
       ledPoint[1] = 0;
       ledPoint[2] = 0;
-      ledVal(0,4,power) ;
-//      ledVal(4,4,state_adc) ;
+   	  ledVal(0,4,power) ;
     }
     uint8_t point = 0;
 
@@ -507,27 +465,39 @@ void periodic_adc() {
 void handle_ntp()
 {
   String ntp_res;
-  ntp_res = query_ntp();
   server.send(200, "text/plain", "  Time:"+ day() + String(".") + month() + String(".") + year() + String("   ") + hour() + String(":") + minute() + String(":") + second() + String(" \n")+ ntp_res);
 }
 void handle_api()
 {
   handle_display();
 }
+
+void updateDisplay(String str){
+    stateDisplay = str;
+    if(stateDisplay.length()>0)
+      ledDigit[4] = stateDisplay.charAt(0);
+    if(stateDisplay.length()>1)
+      ledDigit[5] = stateDisplay.charAt(1);
+    if(stateDisplay.length()>2)
+      ledDigit[6] = stateDisplay.charAt(2);
+    if(stateDisplay.length()>3)
+      ledDigit[7] = stateDisplay.charAt(3);
+}
+
+void updatePower(String str){
+    statePower = str;
+    powerMean = power = atoi(str.c_str());
+}
+
 void handle_display()
 {
+    if(server.hasArg("power"))
+    {
+    	updatePower(server.arg("power"));
+    }
     if(server.hasArg("display"))
     {
-      stateDisplay = server.arg("display");
-      if(stateDisplay.length()>0)
-        ledDigit[4] = stateDisplay.charAt(0);
-      if(stateDisplay.length()>1)
-        ledDigit[5] = stateDisplay.charAt(1);
-      if(stateDisplay.length()>2)
-        ledDigit[6] = stateDisplay.charAt(2);
-      if(stateDisplay.length()>3)
-        ledDigit[7] = stateDisplay.charAt(3);        
-      //ledVal(4,4,stateDisplay);
+    	updateDisplay(server.arg("display"));
     }
     if(server.hasArg("point"))
     {
@@ -540,7 +510,6 @@ void handle_display()
         ledPoint[6] = param.charAt(2)=='1';
       if(param.length()>3)
         ledPoint[7] = param.charAt(3)=='1';        
-      //ledVal(4,4,stateDisplay);
     }
 
     server.send ( 200, "text/plain", "{Leistung:"+String(powerMean)+"W, Counts:"+ button_count+", ADC:" + state_adc + ", Display:"+ stateDisplay+ "}\n");
@@ -672,12 +641,13 @@ void handle_esp_restart() {
 
 void tick_ntp()
 {
-  strLog+=query_ntp();
   if(button_count!=0)
   {
     saveConfig();
   }
   stateDisplay = "";
+  statePower = "";
+  power = powerMean = 0;
   ledDigit[4]=255;
   ledDigit[5]=255;
   ledDigit[6]=255;
@@ -687,72 +657,7 @@ void tick_ntp()
   ledPoint[6] = 0;
   ledPoint[7] = 0;
 }
-String query_ntp()
-{
-  String result="";
-    //get a random server from the pool
-  WiFi.hostByName(ntpServerName, timeServerIP); 
 
-  sendNTPpacket(timeServerIP); // send an NTP packet to a time server
-  // wait to see if a reply is available
-  delay(1000);
-  
-  int cb = udp.parsePacket();
-  if (!cb) {
-    result += ("no packet yet");
-  }
-  else {
-    result += ("packet received, length=");
-    result += String(cb);
-    // We've received a packet, read the data from it
-    udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
-    //the timestamp starts at byte 40 of the received packet and is four bytes,
-    // or two words, long. First, esxtract the two words:
-    unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
-    unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
-    // combine the four bytes (two words) into a long integer
-    // this is NTP time (seconds since Jan 1 1900):
-    unsigned long secsSince1900 = highWord << 16 | lowWord;
-    result += ("Seconds since Jan 1 1900 = " );
-    result += String(secsSince1900);
-    if(secsSince1900==0) return result;
-    // now convert NTP time into everyday time:
-    result += ("Unix time = ");
-    // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
-    const unsigned long seventyYears = 2208988800UL;
-    // subtract seventy years:
-    unsigned long epoch = secsSince1900 - seventyYears;
-    // print Unix time:
-    result += String(epoch);
-    setTime(epoch);
-  }
-  // wait ten seconds before asking for the time again
-  return result;
-}
-
-// send an NTP request to the time server at the given address
-unsigned long sendNTPpacket(IPAddress& address)
-{
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  packetBuffer[1] = 0;     // Stratum, or type of clock
-  packetBuffer[2] = 6;     // Polling Interval
-  packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12]  = 49;
-  packetBuffer[13]  = 0x4E;
-  packetBuffer[14]  = 49;
-  packetBuffer[15]  = 52;
-
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:
-  udp.beginPacket(address, 123); //NTP requests are to port 123
-  udp.write(packetBuffer, NTP_PACKET_SIZE);
-  udp.endPacket();
-}
 
 void ledDelay(void)
 {

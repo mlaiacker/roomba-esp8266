@@ -1,0 +1,2 @@
+#define SSID   "home-wlan"
+#define PSK     "secret"
