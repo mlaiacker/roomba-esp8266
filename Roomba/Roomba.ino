@@ -92,10 +92,11 @@ String panelBodyValue   =  "<span class='pull-right'>";
 String panelcenter   =  "<div class='row'><div class='span6' style='text-align:center'>";
 String panelBodyEnd     =  "</span></div></div>";
 
-String inputBodyStart   =  "<form action='' method='POST'><div class='panel panel-default'><div class='panel-body'>";
+String inputBodyStart   =  "<form action='/api' method='POST'><div class='panel panel-default'><div class='panel-body'>";
 String inputBodyName    =  "<div class='form-group'><div class='input-group'><span class='input-group-addon' id='basic-addon1'>";
 String inputBodyPOST    =  "</span><input type='text' name='";
 String inputBodyClose   =  "' class='form-control' aria-describedby='basic-addon1'></div></div></div></div>";
+
 String roombacontrol    =  "<a href='roombastart'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-play' aria-hidden='true'></span> Start</button></a><a href='roombadock'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-home' aria-hidden='true'></span> Dock</button></a> <a href='roombastop'><button type='button' class='btn btn-default'><span class='glyphicon glyphicon-stop' aria-hidden='true'></span> Stop</button></a></div></div>";
 String linksCleanHour;//   =  "<a href='api?action=cleanHour&value=0'><button type='button' class='btn btn-default'>0</button></a> <a href='api?action=cleanHour&value=1'><button type='button' class='btn btn-default'>1</button></a> <a href='api?action=cleanHour&value=2'> <button type='button' class='btn btn-default'>2</button></a> <a href='api?action=cleanHour&value=3'><button type='button' class='btn btn-default'>3</button></a> </div></div>";
 String linksCleanDays   =  "<a href='api?action=cleanDays&value=1'><button type='button' class='btn btn-default'>M</button></a> <a href='api?action=cleanDays&value=2'><button type='button' class='btn btn-default'>T</button></a> <a href='api?action=cleanDays&value=4'><button type='button' class='btn btn-default'>W</button></a> <a href='api?action=cleanDays&value=8'><button type='button' class='btn btn-default'>T</button></a> <a href='api?action=cleanDays&value=16'><button type='button' class='btn btn-default'>F</button></a> <a href='api?action=cleanDays&value=32'><button type='button' class='btn btn-default'>S</button></a> <a href='api?action=cleanDays&value=64'><button type='button' class='btn btn-default'>S</button></a> </div></div>";
@@ -185,7 +186,7 @@ void setup(void)
 
   jsonSettings["wlan_essid"] = ssid;
   jsonSettings["wlan_psk"] = password;
-  jsonSettings["cleanTime"] = 10;
+  jsonSettings["cleanHour"] = 10;
   jsonSettings["cleanDays"] = 0x1f;
   jsonSettings["cleanAuto"] = 1;
   jsonData["RSSI"] =0;
@@ -509,7 +510,7 @@ void handle_soft_serial()
     break;
     default:
     if (mySerial.available()) {    
-      strLog+=("got data:")+ String(mySerial.available());
+      //strLog+=("got data:")+ String(mySerial.available());
       while(mySerial.available())
       {
         Serial.print(mySerial.read());
@@ -757,7 +758,14 @@ void handle_filemanager_ajax()
 
 void roomba_start()
 {
-  strLog+=String(hour()) + ":" + String(minute()) +" Starting";
+  strLog+=String(hour()) + ":" + String(minute()) +" Starting\n";
+  mySerial.write(128); // start
+  delay(5);
+  mySerial.write(131); // safe
+  delay(5);
+  mySerial.write(135); // clean
+  // try again
+  delay(5);
   mySerial.write(128); // start
   delay(5);
   mySerial.write(131); // safe
@@ -825,7 +833,7 @@ void handle_esp_distance() {
     int clean_daily_mask = jsonSettings["cleanDays"];
     if((1<<((weekday()-2)%7)) & clean_daily_mask)
     {
-      if(hour()==jsonSettings["cleanTime"].as<int>())
+      if(hour()==jsonSettings["cleanHour"].as<int>())
       {
        if(jsonSettings["cleanAuto"].as<int>())
         {
